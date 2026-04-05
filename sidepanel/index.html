@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aviation Manager</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ── Header ────────────────────────────────────────────────────── -->
+  <header>
+    <div class="logo">
+      <span class="logo-icon">✈</span>
+      <span class="logo-text">Aviation Manager</span>
+    </div>
+    <div class="header-actions">
+      <span id="status-dot" class="dot idle" title="Idle"></span>
+      <button id="btn-settings" class="icon-btn" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <!-- ── Tab Bar ───────────────────────────────────────────────────── -->
+  <nav class="tabs">
+    <button class="tab active" data-tab="chat">Chat</button>
+    <button class="tab" data-tab="queue">
+      Queue <span id="queue-badge" class="badge hidden">0</span>
+    </button>
+    <button class="tab" data-tab="tools">Tools</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <!-- ── Chat Tab ──────────────────────────────────────────────────── -->
+  <section id="tab-chat" class="tab-content active">
+    <div id="chat-messages" class="messages"></div>
+    <div class="chat-input-row">
+      <textarea
+        id="chat-input"
+        placeholder="Ask your Instagram manager anything…"
+        rows="2"
+      ></textarea>
+      <button id="btn-send" class="send-btn" title="Send">↑</button>
+    </div>
+    <div id="task-status-bar" class="status-bar hidden">
+      <span class="spinner"></span>
+      <span id="task-status-text">Working…</span>
+      <button id="btn-stop" class="stop-btn">Stop</button>
+    </div>
+  </section>
+
+  <!-- ── Queue Tab ─────────────────────────────────────────────────── -->
+  <section id="tab-queue" class="tab-content">
+    <div class="queue-header">
+      <h3>Pending Approvals</h3>
+      <span class="hint">Review AI-drafted actions before they go live.</span>
+    </div>
+    <div id="action-queue-list" class="queue-list">
+      <div class="empty-state">No pending actions.</div>
+    </div>
+  </section>
+
+  <!-- ── Tools Tab ─────────────────────────────────────────────────── -->
+  <section id="tab-tools" class="tab-content">
+
+    <div class="tools-section">
+      <h4>Content Intelligence</h4>
+      <button class="tool-btn" data-action="scan_hashtags">
+        <span class="tool-icon">#</span>
+        <span>
+          <strong>Scan Trending Aviation Tags</strong>
+          <small>See what's performing right now in your niche</small>
+        </span>
+      </button>
+    </div>
+
+    <div class="tools-section">
+      <h4>Post Optimization</h4>
+      <button class="tool-btn" id="btn-draft-caption">
+        <span class="tool-icon">✍</span>
+        <span>
+          <strong>Draft Caption + Hashtags</strong>
+          <small>Describe your video, get a ready-to-post caption</small>
+        </span>
+      </button>
+    </div>
+
+    <div class="tools-section">
+      <h4>Engagement</h4>
+      <button class="tool-btn" data-action="build_comment_queue">
+        <span class="tool-icon">💬</span>
+        <span>
+          <strong>Build Comment Queue</strong>
+          <small>AI finds 8 posts and drafts thoughtful comments</small>
+        </span>
+      </button>
+      <button class="tool-btn" data-action="build_follow_queue">
+        <span class="tool-icon">+</span>
+        <span>
+          <strong>Build Follow Queue</strong>
+          <small>Find 10 relevant aviation accounts to follow</small>
+        </span>
+      </button>
+      <button class="tool-btn" id="btn-golden-hour">
+        <span class="tool-icon">⏱</span>
+        <span>
+          <strong>Start Golden Hour</strong>
+          <small>Monitor your latest post for 90 mins, auto-draft replies</small>
+        </span>
+      </button>
+    </div>
+
+    <!-- Daily Counter -->
+    <div class="tools-section">
+      <h4>Today's Usage</h4>
+      <div id="daily-counts" class="daily-counts">
+        <div class="count-item"><span class="count-label">Follows</span><span id="count-follows">0 / 35</span></div>
+        <div class="count-item"><span class="count-label">Comments</span><span id="count-comments">0 / 10</span></div>
+        <div class="count-item"><span class="count-label">Likes</span><span id="count-likes">0 / 60</span></div>
+        <div class="count-item"><span class="count-label">DMs</span><span id="count-dms">0 / 5</span></div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ── Settings Tab ───────────────────────────────────────────────── -->
+  <section id="tab-settings" class="tab-content">
+
+    <div class="settings-section-label">Claude</div>
+    <div class="settings-group">
+      <label for="input-api-key">Claude API Key</label>
+      <input type="password" id="input-api-key" placeholder="sk-ant-…" autocomplete="off" />
+      <small>Stored locally, only sent to Anthropic's API.</small>
+    </div>
+    <div class="settings-group">
+      <label for="input-niche">Account Niche</label>
+      <input type="text" id="input-niche" placeholder="aviation, planes, aircraft spotting videos" />
+    </div>
+    <div class="settings-group">
+      <label for="input-tone">Caption Tone</label>
+      <input type="text" id="input-tone" placeholder="enthusiastic but knowledgeable, fellow avgeek" />
+    </div>
+
+    <div class="settings-section-label">Telegram</div>
+    <div class="settings-group">
+      <label for="input-tg-token">Bot Token</label>
+      <input type="password" id="input-tg-token" placeholder="123456:ABC-DEF…" autocomplete="off" />
+      <small>Get from @BotFather on Telegram → /newbot</small>
+    </div>
+    <div class="settings-group">
+      <label for="input-tg-chat">Your Chat ID</label>
+      <input type="text" id="input-tg-chat" placeholder="e.g. 123456789" />
+      <small>Start a chat with your bot, then visit api.telegram.org/bot{TOKEN}/getUpdates</small>
+    </div>
+    <button id="btn-test-telegram" class="secondary-btn">Test Telegram</button>
+
+    <div class="settings-section-label">Autonomous Mode</div>
+    <div class="settings-group">
+      <div class="toggle-row">
+        <div>
+          <strong>Let AI act without approval</strong>
+          <small>AI will comment and follow on its own based on its insights. All actions are logged.</small>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="input-autonomous" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <button id="btn-save-settings" class="primary-btn">Save Settings</button>
+    <div id="settings-saved" class="success-msg hidden">Settings saved.</div>
+  </section>
+
+  <!-- ── Caption Draft Modal ───────────────────────────────────────── -->
+  <div id="modal-caption" class="modal hidden">
+    <div class="modal-box">
+      <h3>Draft Caption</h3>
+      <label>Describe your video</label>
+      <textarea id="caption-video-desc" placeholder="e.g. Close-up of A380 engine startup at Dubai airport, you can see the fan blades spinning up…" rows="3"></textarea>
+      <label>Aircraft type</label>
+      <input type="text" id="caption-aircraft" placeholder="e.g. Airbus A380" />
+      <label>Location (optional)</label>
+      <input type="text" id="caption-location" placeholder="e.g. Dubai International Airport" />
+      <div class="modal-actions">
+        <button id="btn-modal-cancel" class="secondary-btn">Cancel</button>
+        <button id="btn-modal-draft" class="primary-btn">Draft Caption</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Golden Hour Modal ──────────────────────────────────────────── -->
+  <div id="modal-golden" class="modal hidden">
+    <div class="modal-box">
+      <h3>Start Golden Hour</h3>
+      <label>Paste your latest post URL</label>
+      <input type="text" id="golden-post-url" placeholder="https://www.instagram.com/p/…" />
+      <div class="modal-actions">
+        <button id="btn-golden-cancel" class="secondary-btn">Cancel</button>
+        <button id="btn-golden-start" class="primary-btn">Start Monitoring</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
