@@ -23,9 +23,7 @@
   <!-- ── Tab Bar ───────────────────────────────────────────────────── -->
   <nav class="tabs">
     <button class="tab active" data-tab="chat">Chat</button>
-    <button class="tab" data-tab="queue">
-      Queue <span id="queue-badge" class="badge hidden">0</span>
-    </button>
+    <button class="tab" data-tab="activity">Activity</button>
     <button class="tab" data-tab="tools">Tools</button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
@@ -48,14 +46,14 @@
     </div>
   </section>
 
-  <!-- ── Queue Tab ─────────────────────────────────────────────────── -->
-  <section id="tab-queue" class="tab-content">
+  <!-- ── Activity Tab ──────────────────────────────────────────────── -->
+  <section id="tab-activity" class="tab-content">
     <div class="queue-header">
-      <h3>Pending Approvals</h3>
-      <span class="hint">Review AI-drafted actions before they go live.</span>
+      <h3>Activity Log</h3>
+      <span class="hint">Everything the AI has done on your account.</span>
     </div>
-    <div id="action-queue-list" class="queue-list">
-      <div class="empty-state">No pending actions.</div>
+    <div id="activity-log-list" class="queue-list">
+      <div class="empty-state">No activity yet. The AI will start acting on its schedule.</div>
     </div>
   </section>
 
@@ -86,18 +84,11 @@
 
     <div class="tools-section">
       <h4>Engagement</h4>
-      <button class="tool-btn" data-action="build_comment_queue">
+      <button class="tool-btn" data-action="run_engagement">
         <span class="tool-icon">💬</span>
         <span>
-          <strong>Build Comment Queue</strong>
-          <small>AI finds 8 posts and drafts thoughtful comments</small>
-        </span>
-      </button>
-      <button class="tool-btn" data-action="build_follow_queue">
-        <span class="tool-icon">+</span>
-        <span>
-          <strong>Build Follow Queue</strong>
-          <small>Find 10 relevant aviation accounts to follow</small>
+          <strong>Run Engagement Cycle Now</strong>
+          <small>AI comments, follows and likes — no approval needed</small>
         </span>
       </button>
       <button class="tool-btn" id="btn-golden-hour">

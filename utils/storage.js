@@ -32,8 +32,9 @@ const KEYS = {
   TELEGRAM_CHAT_ID:     'config_tg_chat_id',
   AUTONOMOUS_MODE:      'config_autonomous_mode',
 
-  // Autonomous action log
+  // Activity log (what the AI has done)
   AUTONOMOUS_LOG:       'mem_autonomous_log',
+  ACTIVITY_LOG:         'mem_activity_log',
 };
 
 // ─── Daily Limits ─────────────────────────────────────────────────────────────
@@ -255,7 +256,7 @@ async function getConfig() {
     tonePreference:    result[KEYS.TONE_PREFERENCE]      || 'enthusiastic but knowledgeable, fellow avgeek',
     telegramBotToken:  result[KEYS.TELEGRAM_BOT_TOKEN]   || '',
     telegramChatId:    result[KEYS.TELEGRAM_CHAT_ID]     || '',
-    autonomousMode:    result[KEYS.AUTONOMOUS_MODE]      ?? false,
+    autonomousMode:    result[KEYS.AUTONOMOUS_MODE]      ?? true,
   };
 }
 
@@ -282,6 +283,21 @@ async function logAutonomousAction(action) {
 async function getAutonomousLog() {
   const { [KEYS.AUTONOMOUS_LOG]: log = [] } =
     await chrome.storage.local.get(KEYS.AUTONOMOUS_LOG);
+  return log;
+}
+
+// ─── Activity Log (unified feed of everything the AI did) ─────────────────────
+// entry shape: { type, description, targetUrl, executedAt }
+async function addActivity(entry) {
+  const { [KEYS.ACTIVITY_LOG]: log = [] } =
+    await chrome.storage.local.get(KEYS.ACTIVITY_LOG);
+  log.unshift({ ...entry, executedAt: entry.executedAt || Date.now() });
+  await chrome.storage.local.set({ [KEYS.ACTIVITY_LOG]: log.slice(0, 1000) });
+}
+
+async function getActivityLog() {
+  const { [KEYS.ACTIVITY_LOG]: log = [] } =
+    await chrome.storage.local.get(KEYS.ACTIVITY_LOG);
   return log;
 }
 
@@ -315,4 +331,6 @@ export {
   saveConfig,
   logAutonomousAction,
   getAutonomousLog,
+  addActivity,
+  getActivityLog,
 };

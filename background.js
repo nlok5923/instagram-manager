@@ -1,7 +1,13 @@
 // ─── Background Service Worker ────────────────────────────────────────────────
-// Orchestrates Claude API calls, tool execution on the Instagram tab,
-// screenshot capture, Telegram notifications, autonomous actions,
-// and communication with the side panel.
+// Full autonomy mode. The AI acts on its own schedule — no approvals needed.
+// You interact the minimum: drop a video, read the Telegram digest.
+//
+// Schedule:
+//   09:00  — Morning trend scan + post ideas sent to Telegram
+//   Every 60 min — Engagement cycle (comments + follows)
+//   19:00  — Evening engagement push
+//   22:00  — Daily digest sent to Telegram
+//   8 min  — Golden hour comment replies (while active)
 
 import { runTask, chat } from './utils/claude.js';
 import {
@@ -10,27 +16,23 @@ import {
   loadCurrentTask,
   clearCurrentTask,
   saveLastUrl,
-  addToActionQueue,
-  getActionQueue,
-  removeFromActionQueue,
   canPerformAction,
   recordFollowed,
   recordCommented,
-  hasFollowed,
-  hasCommented,
-  getNextHashtagCluster,
   getDailyCounts,
   setGoldenHourPost,
   getGoldenHourPost,
   logAutonomousAction,
+  addActivity,
+  getActivityLog,
+  getNextHashtagCluster,
 } from './utils/storage.js';
 import {
-  notifyApprovalNeeded,
   notifyPostIdea,
-  notifyTaskComplete,
   notifyGoldenHour,
+  sendDailyDigest,
   notifyAlert,
-  pollCallbackQueries,
+  sendMessage,
 } from './utils/telegram.js';
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -41,7 +43,6 @@ let sidePanelPort = null;
 chrome.runtime.onConnect.addListener(port => {
   if (port.name !== 'sidepanel') return;
   sidePanelPort = port;
-
   port.onDisconnect.addListener(() => { sidePanelPort = null; });
 
   resumeStateOnStartup().then(state => {
@@ -49,92 +50,42 @@ chrome.runtime.onConnect.addListener(port => {
   });
 });
 
-function sendToPanel(message) {
-  if (sidePanelPort) {
-    try { sidePanelPort.postMessage(message); } catch (_) {}
-  }
+function sendToPanel(msg) {
+  if (sidePanelPort) try { sidePanelPort.postMessage(msg); } catch (_) {}
 }
 
-// ─── Message Router (from side panel) ────────────────────────────────────────
+// ─── Message Router ───────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.source !== 'iam_panel') return false;
   handlePanelMessage(message).then(sendResponse);
   return true;
 });
 
-async function handlePanelMessage(message) {
-  const { type, payload } = message;
-
+async function handlePanelMessage({ type, payload }) {
   switch (type) {
-    case 'run_task':
-      return await startTask(payload.task, payload.conversationHistory);
+    case 'run_task':      return await startTask(payload.task, payload.conversationHistory);
+    case 'stop_task':     stopActiveTask(); return { ok: true };
+    case 'get_activity':  return { ok: true, log: await getActivityLog() };
+    case 'get_daily_counts': return { ok: true, counts: await getDailyCounts() };
+    case 'chat':          return await handleChat(payload.prompt, payload.history);
 
-    case 'stop_task':
-      stopActiveTask();
-      return { ok: true };
+    // Manual triggers from Tools tab
+    case 'scan_hashtags':       return await runTrendScan();
+    case 'run_engagement':      return await runEngagementCycle();
+    case 'draft_caption':       return await handleDraftCaption(payload);
+    case 'get_hashtag_cluster': return { ok: true, cluster: await getNextHashtagCluster() };
+    case 'start_golden_hour':   return await startGoldenHour(payload.postUrl);
 
-    case 'approve_action':
-      return await executeApprovedAction(payload.actionId);
-
-    case 'reject_action':
-      await removeFromActionQueue(payload.actionId);
-      return { ok: true };
-
-    case 'get_action_queue':
-      return { ok: true, queue: await getActionQueue() };
-
-    case 'get_daily_counts':
-      return { ok: true, counts: await getDailyCounts() };
-
-    case 'get_autonomous_log':
-      return { ok: true, log: await import('./utils/storage.js').then(m => m.getAutonomousLog()) };
-
-    case 'chat':
-      return await handleChat(payload.prompt, payload.history);
-
-    // Module 1: Content Intelligence
-    case 'scan_hashtags':
-      return await startTask(
-        'Scan the top posts in aviation hashtags #aviation, #planespotting, #avgeek. ' +
-        'For each hashtag, navigate to its explore page, read the top 6 posts, and summarize: ' +
-        'what types of content are performing best, what aircraft/angles are trending, content gaps. ' +
-        'If you find a strong post idea, end your response with "POST_IDEA: " followed by the idea.'
-      );
-
-    // Module 2: Post Optimization
-    case 'draft_caption':
-      return await handleDraftCaption(payload);
-
-    case 'get_hashtag_cluster':
-      return { ok: true, cluster: await getNextHashtagCluster() };
-
-    // Module 3: Engagement
-    case 'build_comment_queue':
-      return await startEngagementTask('comments');
-
-    case 'start_golden_hour':
-      return await startGoldenHour(payload.postUrl);
-
-    case 'build_follow_queue':
-      return await startEngagementTask('follows');
-
-    // Autonomous mode: AI acts on its own
-    case 'run_autonomous_cycle':
-      return await runAutonomousCycle();
-
-    default:
-      return { ok: false, error: `Unknown message type: ${type}` };
+    default: return { ok: false, error: `Unknown type: ${type}` };
   }
 }
 
-// ─── Task Execution ───────────────────────────────────────────────────────────
+// ─── Core Task Runner ─────────────────────────────────────────────────────────
 async function startTask(taskDescription, conversationHistory = []) {
   stopActiveTask();
 
   const config = await getConfig();
-  if (!config.claudeApiKey) {
-    return { ok: false, error: 'No Claude API key set. Please add it in Settings.' };
-  }
+  if (!config.claudeApiKey) return { ok: false, error: 'No Claude API key in Settings.' };
 
   await saveCurrentTask({ description: taskDescription, startedAt: Date.now() });
   sendToPanel({ type: 'task_started', payload: { description: taskDescription } });
@@ -159,17 +110,7 @@ async function startTask(taskDescription, conversationHistory = []) {
   if (!signal.aborted) {
     await clearCurrentTask();
     sendToPanel({ type: 'task_done', payload: result });
-
-    // Check for post idea in result
-    if (result.ok && result.result?.includes('POST_IDEA:')) {
-      const idea = result.result.split('POST_IDEA:')[1]?.trim();
-      if (idea) await telegramNotify('post_idea', { idea });
-    }
-
-    // Notify Telegram when task completes with meaningful output
-    if (result.ok && result.result?.length > 100) {
-      await telegramNotify('task_complete', { summary: result.result });
-    }
+    parseAndLogActions(result.result || '');
   }
 
   return result;
@@ -183,293 +124,256 @@ function stopActiveTask() {
   sendToPanel({ type: 'task_stopped' });
 }
 
-// ─── Engagement Tasks (comments + follows) ───────────────────────────────────
-async function startEngagementTask(mode) {
-  const config = await getConfig();
-
-  if (mode === 'comments') {
-    const canComment = await canPerformAction('comments');
-    if (!canComment) {
-      return { ok: false, error: 'Daily comment limit reached (10/day).' };
+// ─── Parse actions from Claude's output and log them ─────────────────────────
+async function parseAndLogActions(text) {
+  const lines = text.split('\n');
+  for (const line of lines) {
+    if (line.includes('AUTONOMOUS_ACTION:')) {
+      const desc = line.split('AUTONOMOUS_ACTION:')[1]?.trim();
+      if (!desc) continue;
+      await logAutonomousAction({ description: desc });
+      await addActivity({ type: inferActionType(desc), description: desc });
+      sendToPanel({ type: 'activity_updated' });
     }
-
-    if (config.autonomousMode) {
-      // Autonomous: Claude finds posts and comments without approval
-      return await startTask(
-        'Find 5 recent posts in aviation hashtags (#planespotting, #aviation, #avgeek, #aviationphotography). ' +
-        'For each post: navigate to it, read the caption and content, write a specific thoughtful comment ' +
-        'that references the aircraft, angle, or story in the post. ' +
-        'Post the comment directly. Add random delays of 2-4 seconds between each comment. ' +
-        'After each comment, say "AUTONOMOUS_ACTION: commented on [url]". ' +
-        'Stay within safe limits — maximum 5 comments this session.'
-      );
-    } else {
-      // Manual approval mode
-      return await startTask(
-        'Find 8 recent posts in aviation hashtags (#planespotting, #aviation, #avgeek, #aviationphotography) ' +
-        'that we haven\'t commented on yet. For each post: navigate to it, read the caption and content, ' +
-        'then write a specific, thoughtful comment referencing something real in the post. ' +
-        'Add each to the approval queue — do NOT post yet. Say "AWAITING APPROVAL" after each one.'
-      );
-    }
-  }
-
-  if (mode === 'follows') {
-    const canFollow = await canPerformAction('follows');
-    if (!canFollow) {
-      return { ok: false, error: 'Daily follow limit reached (35/day).' };
-    }
-
-    if (config.autonomousMode) {
-      return await startTask(
-        'Find 8 Instagram users who recently engaged with top posts in #planespotting or #avgeek. ' +
-        'For each person: visit their profile, verify their content is aviation-related, ' +
-        'check we haven\'t followed them before. If suitable, follow them directly. ' +
-        'Add a 3-5 second delay between each follow. ' +
-        'After each follow say "AUTONOMOUS_ACTION: followed @[username]". ' +
-        'Maximum 8 follows this session.'
-      );
-    } else {
-      return await startTask(
-        'Find 10 Instagram users who recently engaged with top posts in #planespotting or #avgeek. ' +
-        'For each person: visit their profile, check their content is aviation-related, ' +
-        'check we haven\'t followed them before. Add suitable accounts to the follow approval queue — ' +
-        'do NOT follow yet. Say "AWAITING APPROVAL" for each one.'
-      );
+    if (line.includes('POST_IDEA:')) {
+      const idea = line.split('POST_IDEA:')[1]?.trim();
+      if (idea) await tgNotify('post_idea', { idea });
     }
   }
 }
 
-// ─── Approved Action Executor ─────────────────────────────────────────────────
-async function executeApprovedAction(actionId) {
-  const queue = await getActionQueue();
-  const action = queue.find(a => a.id === actionId);
-  if (!action) return { ok: false, error: 'Action not found.' };
+function inferActionType(desc) {
+  if (desc.includes('comment'))  return 'comment';
+  if (desc.includes('follow'))   return 'follow';
+  if (desc.includes('like'))     return 'like';
+  if (desc.includes('reply'))    return 'reply';
+  if (desc.includes('dm'))       return 'dm';
+  return 'action';
+}
 
-  await removeFromActionQueue(actionId);
+// ─── Scheduled Jobs ───────────────────────────────────────────────────────────
 
-  let taskDescription = '';
-
-  switch (action.type) {
-    case 'comment':
-      taskDescription =
-        `Navigate to ${action.targetUrl}. ` +
-        `Post exactly this comment in the comment box: "${action.draftText}". ` +
-        'Click the post button. Wait 2 seconds to confirm it posted.';
-      break;
-
-    case 'follow':
-      taskDescription =
-        `Navigate to ${action.targetUrl}. ` +
-        'Find the Follow button on the profile and click it. ' +
-        'Wait 2 seconds to confirm the follow.';
-      break;
-
-    case 'reply':
-      taskDescription =
-        `Navigate to ${action.targetUrl}. ` +
-        `Find the comment and reply with exactly: "${action.draftText}". Post the reply.`;
-      break;
-
-    case 'dm':
-      taskDescription =
-        `Navigate to ${action.targetUrl}. ` +
-        `Send this DM: "${action.draftText}".`;
-      break;
-
-    default:
-      return { ok: false, error: `Unknown action type: ${action.type}` };
-  }
-
-  // Record before executing
-  if (action.type === 'comment' || action.type === 'reply') {
-    await recordCommented(action.targetUrl);
-  }
-  if (action.type === 'follow') {
-    const username = action.targetUrl?.split('/').filter(Boolean).pop();
-    if (username) await recordFollowed(username);
-  }
-
-  const result = await startTask(taskDescription);
-  sendToPanel({ type: 'action_executed', payload: { actionId, result } });
+// 09:00 — Scan trends, generate post ideas, notify via Telegram
+async function runTrendScan() {
+  const result = await startTask(
+    'Scan the top posts in aviation hashtags #aviation, #planespotting, #avgeek, #aviationphotography, #aircraftspotting. ' +
+    'For each hashtag page, read the top 6 posts. Identify: what aircraft types are trending, ' +
+    'what content formats are getting the most engagement, any viral posts or emerging topics. ' +
+    'Then generate 3 specific post ideas for my aviation video account based on what you found. ' +
+    'For each post idea, write it on a new line starting with "POST_IDEA:" followed by the idea. ' +
+    'End with a brief summary of today\'s trends.'
+  );
   return result;
 }
 
-// ─── Autonomous Mode ──────────────────────────────────────────────────────────
-// Called on a schedule when autonomous mode is enabled.
-// Claude decides what to do based on the current state and insights.
-async function runAutonomousCycle() {
-  const config = await getConfig();
-  if (!config.autonomousMode) return { ok: false, error: 'Autonomous mode is off.' };
-
+// Hourly + 19:00 — Comment on posts + follow relevant accounts
+async function runEngagementCycle() {
   const counts = await getDailyCounts();
   const canComment = counts.comments < 10;
   const canFollow  = counts.follows  < 35;
+  const canLike    = counts.likes    < 60;
 
-  if (!canComment && !canFollow) {
-    return { ok: true, result: 'Daily limits reached. No autonomous actions taken.' };
+  if (!canComment && !canFollow && !canLike) {
+    return { ok: true, result: 'Daily limits reached. No engagement actions taken.' };
   }
 
-  const availableActions = [];
-  if (canComment) availableActions.push(`comment on ${10 - counts.comments} more posts`);
-  if (canFollow)  availableActions.push(`follow ${35 - counts.follows} more accounts`);
+  const budget = [];
+  if (canComment) budget.push(`comment on up to ${10 - counts.comments} posts`);
+  if (canFollow)  budget.push(`follow up to ${Math.min(8, 35 - counts.follows)} accounts`);
+  if (canLike)    budget.push(`like up to ${Math.min(15, 60 - counts.likes)} posts`);
+
+  return await startTask(
+    `Run an autonomous engagement cycle for an aviation Instagram account. ` +
+    `Your budget this cycle: ${budget.join(', ')}. ` +
+    `\nStrategy:\n` +
+    `1. Navigate to #planespotting and #avgeek explore pages.\n` +
+    `2. Find posts with good content (not already commented/liked by us).\n` +
+    `3. Leave specific, thoughtful comments that reference the actual aircraft, angle, or story.\n` +
+    `4. Follow users who post quality aviation content and appear genuinely engaged in the community.\n` +
+    `5. Like posts from accounts we follow or that align with our niche.\n` +
+    `6. Add 3-5 second random delays between every action to behave naturally.\n` +
+    `7. After each action, write "AUTONOMOUS_ACTION: [description]" on its own line.\n` +
+    `8. At the end, write a one-paragraph summary of what you did and why.`
+  );
+}
+
+// Golden hour — auto-reply to comments on latest post
+async function runGoldenHourCycle() {
+  const goldenHour = await getGoldenHourPost();
+  if (!goldenHour) {
+    chrome.alarms.clear('golden_hour_check');
+    return;
+  }
 
   const result = await startTask(
-    `You are running an autonomous engagement cycle for an aviation Instagram account. ` +
-    `Based on your knowledge of what grows aviation accounts, decide what to do right now. ` +
-    `Available budget: ${availableActions.join(', ')}. ` +
-    `\n\nYou can: scan trending aviation hashtags, comment on relevant posts, follow engaged aviation fans. ` +
-    `Act on what you think will grow the account most effectively right now. ` +
-    `Keep all actions specific and human-like. Add 3-5 second delays between actions. ` +
-    `After each action say "AUTONOMOUS_ACTION: [what you did]". ` +
-    `At the end, summarize what you did and why.`
+    `Navigate to ${goldenHour.url}. ` +
+    `Read all comments on the post. For every comment that isn't spam or just an emoji, ` +
+    `reply directly with a warm, specific response that continues the conversation. ` +
+    `Post each reply immediately — no approval needed. ` +
+    `After each reply, write "AUTONOMOUS_ACTION: replied to comment by @[username]". ` +
+    `At the end write "REPLIES_SENT: N" where N is the total number of replies you posted.`
   );
 
-  // Parse autonomous actions from result and log them
+  // Parse reply count for Telegram notification
   if (result.ok && result.result) {
-    const lines = result.result.split('\n');
-    for (const line of lines) {
-      if (line.includes('AUTONOMOUS_ACTION:')) {
-        const actionDesc = line.split('AUTONOMOUS_ACTION:')[1]?.trim();
-        if (actionDesc) {
-          await logAutonomousAction({ description: actionDesc, cycle: 'auto' });
-        }
-      }
+    const match = result.result.match(/REPLIES_SENT:\s*(\d+)/);
+    const repliesSent = match ? parseInt(match[1]) : 0;
+    if (repliesSent > 0) {
+      await tgNotify('golden_hour', {
+        postUrl: goldenHour.url,
+        commentCount: repliesSent,
+        repliesSent,
+      });
     }
-
-    // Notify via Telegram
-    await telegramNotify('alert', {
-      title: 'Autonomous Cycle Complete',
-      body: result.result.slice(0, 600),
-    });
   }
-
-  return result;
 }
 
-// ─── Telegram Notifications ───────────────────────────────────────────────────
-async function telegramNotify(type, payload) {
+// 22:00 — Send daily digest to Telegram
+async function sendEveningDigest() {
   const config = await getConfig();
-  const { telegramBotToken: botToken, telegramChatId: chatId } = config;
-  if (!botToken || !chatId) return;
+  if (!config.telegramBotToken || !config.telegramChatId) return;
 
-  switch (type) {
-    case 'approval':
-      return await notifyApprovalNeeded({ botToken, chatId, action: payload.action });
-    case 'post_idea':
-      return await notifyPostIdea({ botToken, chatId, idea: payload.idea });
-    case 'task_complete':
-      return await notifyTaskComplete({ botToken, chatId, summary: payload.summary });
-    case 'golden_hour':
-      return await notifyGoldenHour({ botToken, chatId, ...payload });
-    case 'alert':
-      return await notifyAlert({ botToken, chatId, title: payload.title, body: payload.body });
-  }
+  const counts = await getDailyCounts();
+  const log    = await getActivityLog();
+
+  // Get today's actions
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayActions = log
+    .filter(e => e.executedAt >= todayStart.getTime())
+    .map(e => e.description)
+    .slice(0, 5);
+
+  // Ask Claude for post ideas based on today's trend scan
+  const ideasResult = await handleChat(
+    'Based on current aviation trends, suggest 3 short post ideas for tomorrow. ' +
+    'Return them as a numbered list, one per line, each under 20 words.'
+  );
+  const postIdeas = ideasResult.ok
+    ? ideasResult.text.split('\n').filter(l => l.match(/^\d+\./)).map(l => l.replace(/^\d+\.\s*/, ''))
+    : [];
+
+  await sendDailyDigest({
+    botToken:   config.telegramBotToken,
+    chatId:     config.telegramChatId,
+    counts,
+    topActions: todayActions,
+    postIdeas,
+  });
 }
 
-// Notify Telegram when a new item is added to the approval queue
-const _origAddToActionQueue = addToActionQueue;
-// We intercept by wrapping — background calls this wrapper instead
-async function queueActionWithNotification(action) {
-  const id = await addToActionQueue(action);
-  sendToPanel({ type: 'queue_updated' });
-  // Notify Telegram
-  await telegramNotify('approval', { action: { ...action, id } });
-  return id;
+// ─── Alarm Scheduler ─────────────────────────────────────────────────────────
+function scheduleAlarms() {
+  // Engagement: every 60 minutes
+  chrome.alarms.create('engagement_cycle', { periodInMinutes: 60 });
+
+  // Morning trend scan: 09:00 daily
+  chrome.alarms.create('morning_scan', {
+    when:            nextAlarmTime(9, 0),
+    periodInMinutes: 24 * 60,
+  });
+
+  // Evening engagement push: 19:00 daily
+  chrome.alarms.create('evening_engagement', {
+    when:            nextAlarmTime(19, 0),
+    periodInMinutes: 24 * 60,
+  });
+
+  // Daily digest: 22:00 daily
+  chrome.alarms.create('daily_digest', {
+    when:            nextAlarmTime(22, 0),
+    periodInMinutes: 24 * 60,
+  });
 }
 
-// ─── Telegram Callback Poller ─────────────────────────────────────────────────
-// Every 30 seconds, check if the user tapped Approve/Reject in Telegram.
 chrome.alarms.onAlarm.addListener(async alarm => {
-  if (alarm.name === 'telegram_poll') {
-    const config = await getConfig();
-    if (!config.telegramBotToken) return;
-
-    const decisions = await pollCallbackQueries(config.telegramBotToken);
-    for (const { actionId, decision } of decisions) {
-      if (decision === 'approve') {
-        const result = await executeApprovedAction(actionId);
-        sendToPanel({ type: 'queue_updated' });
-        await telegramNotify('alert', {
-          title: 'Action Executed',
-          body: result.ok ? 'Done!' : `Failed: ${result.error}`,
-        });
-      } else {
-        await removeFromActionQueue(actionId);
-        sendToPanel({ type: 'queue_updated' });
-      }
-    }
-  }
-
-  if (alarm.name === 'golden_hour_check') {
-    const goldenHour = await getGoldenHourPost();
-    if (!goldenHour) {
-      chrome.alarms.clear('golden_hour_check');
-      return;
-    }
-
-    const result = await startTask(
-      `Navigate to ${goldenHour.url}. Read all comments on the post. ` +
-      'For each comment that isn\'t a simple emoji or spam, draft a warm, specific reply. ' +
-      'Add each reply to the approval queue — do NOT post yet. ' +
-      'Count how many new comments you found and include the number in your final response as "NEW_COMMENTS: N".'
-    );
-
-    // Parse comment count and send Telegram notification
-    if (result.ok && result.result) {
-      const match = result.result.match(/NEW_COMMENTS:\s*(\d+)/);
-      const count = match ? parseInt(match[1]) : 0;
-      if (count > 0) {
-        await telegramNotify('golden_hour', { postUrl: goldenHour.url, commentCount: count });
-      }
-    }
-  }
-
-  if (alarm.name === 'autonomous_cycle') {
-    const config = await getConfig();
-    if (config.autonomousMode) {
-      await runAutonomousCycle();
-    }
+  switch (alarm.name) {
+    case 'engagement_cycle':  await runEngagementCycle(); break;
+    case 'morning_scan':      await runTrendScan();        break;
+    case 'evening_engagement':await runEngagementCycle(); break;
+    case 'daily_digest':      await sendEveningDigest();   break;
+    case 'golden_hour_check': await runGoldenHourCycle();  break;
   }
 });
+
+function nextAlarmTime(hour, minute) {
+  const now  = new Date();
+  const next = new Date();
+  next.setHours(hour, minute, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next.getTime();
+}
 
 // ─── Golden Hour ──────────────────────────────────────────────────────────────
 async function startGoldenHour(postUrl) {
   await setGoldenHourPost(postUrl);
   sendToPanel({ type: 'golden_hour_started', payload: { postUrl } });
   chrome.alarms.create('golden_hour_check', { periodInMinutes: 8 });
-  await telegramNotify('alert', {
-    title: 'Golden Hour Started',
-    body: `Now monitoring your post for the next 90 minutes.\n${postUrl}`,
+  await tgNotify('alert', {
+    title: '⏱ Golden Hour Started',
+    body:  `Monitoring your post and auto-replying to comments for the next 90 minutes.\n${postUrl}`,
   });
   return { ok: true };
 }
 
-// ─── Tool Execution on Instagram Tab ─────────────────────────────────────────
+// ─── Caption Drafting ─────────────────────────────────────────────────────────
+async function handleDraftCaption({ videoDescription, aircraftType, location }) {
+  const config  = await getConfig();
+  const cluster = await getNextHashtagCluster();
+
+  return await handleChat(
+    `Draft an Instagram caption for my aviation video.\n\n` +
+    `Details:\n- Video: ${videoDescription}\n` +
+    `- Aircraft: ${aircraftType || 'not specified'}\n` +
+    `- Location: ${location || 'not specified'}\n\n` +
+    `Requirements:\n` +
+    `- Punchy opening hook\n` +
+    `- 2-3 sentences of engaging context (facts, story, or detail)\n` +
+    `- CTA that encourages saves or shares\n` +
+    `- Hashtags on a new line: ${cluster?.tags.join(' ')}\n\n` +
+    `Tone: ${config.tonePreference}. Under 200 words.`
+  );
+}
+
+// ─── Chat (no browser, pure Claude) ──────────────────────────────────────────
+async function handleChat(prompt, history = []) {
+  const config = await getConfig();
+  if (!config.claudeApiKey) return { ok: false, error: 'No Claude API key in Settings.' };
+  const { chat } = await import('./utils/claude.js');
+  return await chat({ apiKey: config.claudeApiKey, config, prompt, conversationHistory: history });
+}
+
+// ─── Telegram Helper ──────────────────────────────────────────────────────────
+async function tgNotify(type, payload) {
+  const config = await getConfig();
+  const { telegramBotToken: botToken, telegramChatId: chatId } = config;
+  if (!botToken || !chatId) return;
+
+  switch (type) {
+    case 'post_idea':   return await notifyPostIdea({ botToken, chatId, idea: payload.idea });
+    case 'golden_hour': return await notifyGoldenHour({ botToken, chatId, ...payload });
+    case 'alert':       return await notifyAlert({ botToken, chatId, title: payload.title, body: payload.body });
+  }
+}
+
+// ─── Tool Execution ───────────────────────────────────────────────────────────
 async function executeToolOnInstagramTab(tool, params) {
   const tab = await getOrOpenInstagramTab();
   if (!tab) return { ok: false, error: 'Could not find or open Instagram tab.' };
-
   if (params.url) await saveLastUrl(params.url);
-
   if (tool === 'screenshot') return await captureTabScreenshot(tab.id);
-
   return await sendToContentScript(tab.id, tool, params);
 }
 
 async function sendToContentScript(tabId, tool, params) {
   return new Promise(resolve => {
-    chrome.tabs.sendMessage(
-      tabId,
-      { source: 'iam_background', tool, params },
-      response => {
-        if (chrome.runtime.lastError) {
-          resolve({ ok: false, error: chrome.runtime.lastError.message });
-        } else {
-          resolve(response || { ok: false, error: 'No response from content script' });
-        }
+    chrome.tabs.sendMessage(tabId, { source: 'iam_background', tool, params }, response => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+      } else {
+        resolve(response || { ok: false, error: 'No response from content script' });
       }
-    );
+    });
   });
 }
 
@@ -493,67 +397,22 @@ async function getOrOpenInstagramTab() {
   return tab;
 }
 
-// ─── Resume on Startup ────────────────────────────────────────────────────────
+// ─── Resume State ─────────────────────────────────────────────────────────────
 async function resumeStateOnStartup() {
-  const [task, queue, goldenHour] = await Promise.all([
-    loadCurrentTask(),
-    getActionQueue(),
-    getGoldenHourPost(),
-  ]);
-
-  if (!task && queue.length === 0 && !goldenHour) return null;
-
-  return {
-    previousTask:      task,
-    pendingApprovals:  queue.length,
-    goldenHourActive:  !!goldenHour,
-  };
-}
-
-// ─── Chat ─────────────────────────────────────────────────────────────────────
-async function handleChat(prompt, history = []) {
-  const config = await getConfig();
-  if (!config.claudeApiKey) return { ok: false, error: 'No Claude API key set.' };
-  return await chat({ apiKey: config.claudeApiKey, config, prompt, conversationHistory: history });
-}
-
-// ─── Caption Drafting ─────────────────────────────────────────────────────────
-async function handleDraftCaption({ videoDescription, aircraftType, location }) {
-  const config = await getConfig();
-  const cluster = await getNextHashtagCluster();
-
-  const prompt =
-    `Draft an Instagram caption for my aviation video.\n\n` +
-    `Video details:\n` +
-    `- Description: ${videoDescription}\n` +
-    `- Aircraft: ${aircraftType || 'not specified'}\n` +
-    `- Location: ${location || 'not specified'}\n\n` +
-    `Requirements:\n` +
-    `- Opening hook (first line grabs attention)\n` +
-    `- 2-3 sentences of engaging context (aircraft facts, flight details, or story)\n` +
-    `- A call-to-action that encourages saves or shares\n` +
-    `- End with these hashtags on a new line: ${cluster?.tags.join(' ')}\n\n` +
-    `Tone: ${config.tonePreference}\n` +
-    `Keep it under 200 words total.`;
-
-  return await handleChat(prompt);
+  const [task, goldenHour] = await Promise.all([loadCurrentTask(), getGoldenHourPost()]);
+  if (!task && !goldenHour) return null;
+  return { previousTask: task, goldenHourActive: !!goldenHour };
 }
 
 // ─── Extension Install / Startup ──────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-
-  // Set up recurring alarms
-  chrome.alarms.create('telegram_poll',    { periodInMinutes: 0.5 }); // every 30s
-  chrome.alarms.create('autonomous_cycle', { periodInMinutes: 120 }); // every 2 hours
+  scheduleAlarms();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create('telegram_poll',    { periodInMinutes: 0.5 });
-  chrome.alarms.create('autonomous_cycle', { periodInMinutes: 120 });
+  scheduleAlarms();
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
