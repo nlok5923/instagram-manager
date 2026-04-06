@@ -218,77 +218,86 @@ export async function chat({ apiKey, config, systemOverride, prompt, conversatio
 
 // ─── Anthropic API Call ───────────────────────────────────────────────────────
 async function callAnthropic({ apiKey, messages, config, systemOverride, noTools }) {
-  try {
-    const body = {
-      model:      config.modelId || 'claude-sonnet-4-5',
-      max_tokens: MAX_TOKENS,
-      system:     systemOverride || buildSystemPrompt(config),
-      messages:   toAnthropicMessages(messages),
-    };
-    if (!noTools) body.tools = INSTAGRAM_TOOLS;
+  const body = {
+    model:      config.modelId || 'claude-sonnet-4-5',
+    max_tokens: MAX_TOKENS,
+    system:     systemOverride || buildSystemPrompt(config),
+    messages:   toAnthropicMessages(messages),
+  };
+  if (!noTools) body.tools = INSTAGRAM_TOOLS;
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method:  'POST',
-      headers: {
-        'Content-Type':      'application/json',
-        'x-api-key':         apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      if (res.status === 401) return { error: 'Invalid API key (401). Check Settings.' };
-      if (res.status === 429) return { error: 'Rate limited (429). Will retry next cycle.' };
-      return { error: err?.error?.message || `HTTP ${res.status}` };
-    }
-    return await res.json();
-  } catch (err) {
-    return { error: err.message === 'Failed to fetch' ? 'Network error — check connection.' : err.message };
-  }
+  return await fetchWithRetry('https://api.anthropic.com/v1/messages', {
+    method:  'POST',
+    headers: {
+      'Content-Type':      'application/json',
+      'x-api-key':         apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 // ─── OpenAI-Compatible API Call (Kimi, OpenRouter, etc.) ─────────────────────
 async function callOpenAICompat({ apiKey, messages, config, systemOverride, noTools }) {
-  try {
-    const system = systemOverride || buildSystemPrompt(config);
-    const oaiMessages = [
-      { role: 'system', content: system },
-      ...toOpenAIMessages(messages),
-    ];
+  const system = systemOverride || buildSystemPrompt(config);
+  const oaiMessages = [
+    { role: 'system', content: system },
+    ...toOpenAIMessages(messages),
+  ];
 
-    const body = {
-      model:      config.modelId || 'kimi-k2',
-      max_tokens: MAX_TOKENS,
-      messages:   oaiMessages,
-    };
-    if (!noTools) {
-      body.tools = toOpenAITools(INSTAGRAM_TOOLS);
-      body.tool_choice = 'auto';
+  const body = {
+    model:      config.modelId || 'kimi-k2.5',
+    max_tokens: MAX_TOKENS,
+    messages:   oaiMessages,
+  };
+  if (!noTools) {
+    body.tools = toOpenAITools(INSTAGRAM_TOOLS);
+    body.tool_choice = 'auto';
+  }
+
+  const baseUrl = config.apiBaseUrl || 'https://api.moonshot.ai/v1';
+
+  return await fetchWithRetry(`${baseUrl}/chat/completions`, {
+    method:  'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+// ─── Fetch with 429 Retry ─────────────────────────────────────────────────────
+const RETRY_DELAYS = [10_000, 30_000, 60_000]; // 10s, 30s, 60s
+
+async function fetchWithRetry(url, options) {
+  for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+    try {
+      const res = await fetch(url, options);
+
+      if (res.status === 429 && attempt < RETRY_DELAYS.length) {
+        const delay = RETRY_DELAYS[attempt];
+        console.warn(`Rate limited — waiting ${delay / 1000}s before retry ${attempt + 1}…`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        if (res.status === 401) return { error: 'Invalid API key (401). Check Settings.' };
+        if (res.status === 429) return { error: 'Rate limited — all retries exhausted. Try again later.' };
+        return { error: err?.error?.message || `HTTP ${res.status}` };
+      }
+
+      return await res.json();
+    } catch (err) {
+      if (attempt < RETRY_DELAYS.length) {
+        await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]));
+        continue;
+      }
+      return { error: err.message === 'Failed to fetch' ? 'Network error — check connection.' : err.message };
     }
-
-    const baseUrl = config.apiBaseUrl || 'https://api.moonshot.cn/v1';
-
-    const res = await fetch(`${baseUrl}/chat/completions`, {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      if (res.status === 401) return { error: 'Invalid API key (401). Check Settings.' };
-      if (res.status === 429) return { error: 'Rate limited (429). Will retry next cycle.' };
-      return { error: err?.error?.message || `HTTP ${res.status}` };
-    }
-    return await res.json();
-  } catch (err) {
-    return { error: err.message === 'Failed to fetch' ? 'Network error — check connection.' : err.message };
   }
 }
 
