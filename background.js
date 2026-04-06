@@ -443,9 +443,66 @@ async function tgNotify(type, payload) {
 async function executeToolOnInstagramTab(tool, params) {
   const tab = await getOrOpenInstagramTab();
   if (!tab) return { ok: false, error: 'Could not find or open Instagram tab.' };
+
   if (params.url) await saveLastUrl(params.url);
+
+  // navigate is handled here in the background — never via content script,
+  // because navigating destroys the page and closes the message channel.
+  if (tool === 'navigate') return await navigateTab(tab.id, params.url);
+
+  // screenshot requires the tab to be active (captureVisibleTab limitation)
   if (tool === 'screenshot') return await captureTabScreenshot(tab.id);
+
   return await sendToContentScript(tab.id, tool, params);
+}
+
+async function navigateTab(tabId, url) {
+  if (!url || !url.includes('instagram.com')) {
+    return { ok: false, error: 'Only instagram.com URLs are allowed.' };
+  }
+
+  await chrome.tabs.update(tabId, { url });
+
+  // Wait for the new page to finish loading
+  await waitForTabLoad(tabId);
+
+  // Give the content script time to initialize on the new page
+  await sleep(1500);
+
+  return { ok: true, data: { navigated: url } };
+}
+
+async function waitForTabLoad(tabId) {
+  return new Promise(resolve => {
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    // Safety timeout — resolve after 10s regardless
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    }, 10_000);
+  });
+}
+
+async function captureTabScreenshot(tabId) {
+  // captureVisibleTab only works on the active tab — make it active first
+  await chrome.tabs.update(tabId, { active: true });
+  await sleep(400); // let the render settle
+
+  return new Promise(resolve => {
+    chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 70 }, dataUrl => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+      } else {
+        resolve({ ok: true, data: { screenshot: dataUrl } });
+      }
+    });
+  });
 }
 
 async function sendToContentScript(tabId, tool, params) {
@@ -460,23 +517,13 @@ async function sendToContentScript(tabId, tool, params) {
   });
 }
 
-async function captureTabScreenshot(tabId) {
-  return new Promise(resolve => {
-    chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 70 }, dataUrl => {
-      if (chrome.runtime.lastError) {
-        resolve({ ok: false, error: chrome.runtime.lastError.message });
-      } else {
-        resolve({ ok: true, data: { screenshot: dataUrl } });
-      }
-    });
-  });
-}
-
 async function getOrOpenInstagramTab() {
   const tabs = await chrome.tabs.query({ url: '*://www.instagram.com/*' });
   if (tabs.length > 0) return tabs[0];
-  const tab = await chrome.tabs.create({ url: 'https://www.instagram.com/', active: false });
-  await sleep(3000);
+  // Open as active so captureVisibleTab works immediately
+  const tab = await chrome.tabs.create({ url: 'https://www.instagram.com/', active: true });
+  await waitForTabLoad(tab.id);
+  await sleep(1000);
   return tab;
 }
 

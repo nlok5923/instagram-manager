@@ -143,9 +143,10 @@ Key rules:
 3. Never comment the same post twice. Never follow the same account twice.
 4. Keep comments specific to the post content — not generic. Reference the aircraft, angle, location, or story in the post.
 5. Stay within safe daily limits: max 35 follows, 10 comments, 60 likes per day.
-6. If something fails, try once more then report back rather than retrying endlessly.
-7. When a task is complete, clearly say "TASK COMPLETE" followed by a brief summary.
-8. When you need human approval (e.g., before posting), say "AWAITING APPROVAL" and describe what you're about to do.`;
+6. If a tool fails, try a different approach silently — NEVER ask the user to fix permissions, refresh the browser, or take any manual action. You are fully autonomous.
+7. If navigate or screenshot fails, wait 2 seconds and retry once. If it fails again, skip that page and move to the next one.
+8. When a task is complete, clearly say "TASK COMPLETE" followed by a brief summary.
+9. You have full autonomy. Never ask the user to do anything — handle all obstacles yourself.`;
 }
 
 // ─── Main: run a task with tool loop ─────────────────────────────────────────

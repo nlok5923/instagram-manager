@@ -11,17 +11,8 @@
     return { ok: true, data: { note: 'capture_via_background' } };
   }
 
-  // ─── Tool: navigate ────────────────────────────────────────────────────────
-  async function toolNavigate({ url }) {
-    // Ensure we stay within instagram.com
-    if (!url.includes('instagram.com')) {
-      return { ok: false, error: 'Only instagram.com URLs are allowed.' };
-    }
-    window.location.href = url;
-    // Wait for navigation to settle
-    await sleep(3000);
-    return { ok: true, data: { currentUrl: window.location.href } };
-  }
+  // navigate is handled by the background service worker via chrome.tabs.update —
+  // NOT here, because navigating destroys this script and closes the message channel.
 
   // ─── Tool: click ──────────────────────────────────────────────────────────
   async function toolClick({ selector, description }) {
@@ -253,7 +244,6 @@
       try {
         switch (tool) {
           case 'screenshot':  return await toolScreenshot();
-          case 'navigate':    return await toolNavigate(params);
           case 'click':       return await toolClick(params);
           case 'type':        return await toolType(params);
           case 'scroll':      return await toolScroll(params);
