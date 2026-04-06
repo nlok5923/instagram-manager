@@ -309,6 +309,8 @@ async function loadSettings() {
   document.getElementById('input-tg-token').value     = config.telegramBotToken;
   document.getElementById('input-tg-chat').value      = config.telegramChatId;
   document.getElementById('input-autonomous').checked = config.autonomousMode;
+  document.getElementById('input-model-id').value     = config.modelId;
+  document.getElementById('input-api-base-url').value = config.apiBaseUrl;
 }
 
 function setupSettings() {
@@ -320,6 +322,8 @@ function setupSettings() {
       telegramBotToken: document.getElementById('input-tg-token').value.trim(),
       telegramChatId:   document.getElementById('input-tg-chat').value.trim(),
       autonomousMode:   document.getElementById('input-autonomous').checked,
+      modelId:          document.getElementById('input-model-id').value.trim(),
+      apiBaseUrl:       document.getElementById('input-api-base-url').value.trim(),
     });
     const msg = document.getElementById('settings-saved');
     msg.classList.remove('hidden');

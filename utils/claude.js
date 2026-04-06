@@ -1,22 +1,18 @@
-// ─── Claude API Wrapper ───────────────────────────────────────────────────────
-// Handles all communication with the Anthropic API.
-// Supports: tool use loop, vision (base64 screenshots), streaming status.
+// ─── AI Client ────────────────────────────────────────────────────────────────
+// Supports two providers:
+//   • Anthropic  (Claude models)  — x-api-key auth, Anthropic message format
+//   • OpenAI-compatible           — Bearer auth, OpenAI message format
+//                                   Works with Kimi, OpenRouter, etc.
 
-const CLAUDE_MODEL = 'claude-sonnet-4-5';
-const API_URL      = 'https://api.anthropic.com/v1/messages';
-const MAX_TOKENS   = 4096;
-const MAX_TOOL_ITERATIONS = 100; // safety cap per task
+const MAX_TOKENS         = 4096;
+const MAX_TOOL_ITERATIONS = 100;
 
-// ─── Tool Definitions (what Claude can do on Instagram) ───────────────────────
+// ─── Tool Definitions (Anthropic format — converted for OpenAI when needed) ───
 export const INSTAGRAM_TOOLS = [
   {
     name: 'screenshot',
-    description: 'Capture a screenshot of the current Instagram page to see what is visible.',
-    input_schema: {
-      type: 'object',
-      properties: {},
-      required: [],
-    },
+    description: 'Capture a screenshot of the current Instagram page. Use sparingly — prefer read_page for text extraction.',
+    input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'navigate',
@@ -24,156 +20,110 @@ export const INSTAGRAM_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        url: {
-          type: 'string',
-          description: 'Full instagram.com URL to navigate to. E.g. https://www.instagram.com/explore/tags/aviation/',
-        },
+        url: { type: 'string', description: 'Full instagram.com URL, e.g. https://www.instagram.com/explore/tags/aviation/' },
       },
       required: ['url'],
     },
   },
   {
     name: 'click',
-    description: 'Click on an element on the page.',
+    description: 'Click an element on the page.',
     input_schema: {
       type: 'object',
       properties: {
-        selector: {
-          type: 'string',
-          description: 'CSS selector for the element. Use this when you know the exact selector.',
-        },
-        description: {
-          type: 'string',
-          description: 'Human description of the element to click (e.g. "Follow button", "Comment box", "Post button"). Used as fallback when selector is unknown.',
-        },
+        selector:    { type: 'string', description: 'CSS selector.' },
+        description: { type: 'string', description: 'Human description, e.g. "Like button", "Follow button".' },
       },
     },
   },
   {
     name: 'type',
-    description: 'Type text into a focused input field or textarea.',
+    description: 'Type text into a focused input field.',
     input_schema: {
       type: 'object',
       properties: {
-        selector: {
-          type: 'string',
-          description: 'CSS selector for the input/textarea.',
-        },
-        description: {
-          type: 'string',
-          description: 'Human description of the field (e.g. "comment input", "caption field").',
-        },
-        text: {
-          type: 'string',
-          description: 'Text to type into the field.',
-        },
-        clearFirst: {
-          type: 'boolean',
-          description: 'Clear existing content before typing. Default false.',
-        },
+        selector:    { type: 'string' },
+        description: { type: 'string' },
+        text:        { type: 'string', description: 'Text to type.' },
+        clearFirst:  { type: 'boolean' },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'post_comment',
+    description: 'Post a comment on the current Instagram post in one shot — click textarea, type text, wait for Post button, submit. Use this instead of separate click+type+click.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The comment text.' },
       },
       required: ['text'],
     },
   },
   {
     name: 'scroll',
-    description: 'Scroll the page to load more content.',
+    description: 'Scroll the page.',
     input_schema: {
       type: 'object',
       properties: {
-        direction: {
-          type: 'string',
-          enum: ['down', 'up'],
-          description: 'Scroll direction. Default: down.',
-        },
-        amount: {
-          type: 'number',
-          description: 'Pixels to scroll. Default: 600.',
-        },
-        selector: {
-          type: 'string',
-          description: 'CSS selector of scrollable container. Omit to scroll the window.',
-        },
+        direction: { type: 'string', enum: ['down', 'up'] },
+        amount:    { type: 'number', description: 'Pixels. Default 600.' },
+        selector:  { type: 'string' },
       },
     },
   },
   {
     name: 'read_page',
-    description: 'Extract structured content from the current page without taking a screenshot.',
+    description: 'Extract structured content from the current page. Prefer this over screenshot.',
     input_schema: {
       type: 'object',
       properties: {
-        mode: {
-          type: 'string',
-          enum: ['full', 'posts', 'profile', 'post', 'feed'],
-          description: 'Extraction mode. "posts" for hashtag pages, "profile" for user profiles, "post" for a single post, "feed" for home feed.',
-        },
+        mode: { type: 'string', enum: ['full', 'posts', 'profile', 'post', 'feed'] },
       },
     },
   },
   {
     name: 'wait',
-    description: 'Wait for a number of seconds. Use to let pages load or to add human-like delays.',
+    description: 'Wait N seconds.',
     input_schema: {
       type: 'object',
       properties: {
-        seconds: {
-          type: 'number',
-          description: 'Number of seconds to wait (1-10). Default: 2.',
-        },
+        seconds: { type: 'number', description: '1–10. Default 2.' },
       },
-    },
-  },
-  {
-    name: 'post_comment',
-    description: 'Post a comment on the current Instagram post. Handles the full flow: clicks the textarea, types the text, waits for the Post button to appear, then submits. Use this instead of separate click+type+click steps.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        text: { type: 'string', description: 'The comment text to post.' },
-      },
-      required: ['text'],
     },
   },
   {
     name: 'inspect_dom',
-    description: 'Inspect the current Instagram page and return the real selectors and HTML of key interactive elements (like button, follow button, comment input, etc.). Use this when click fails to understand the actual DOM structure.',
-    input_schema: {
-      type: 'object',
-      properties: {},
-      required: [],
-    },
+    description: 'Inspect the current page DOM and return real selectors for key elements. Use when clicks fail.',
+    input_schema: { type: 'object', properties: {}, required: [] },
   },
 ];
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 export function buildSystemPrompt(config) {
-  return `You are an Instagram account manager for a hobby aviation account that posts videos about planes, aircraft, and aviation.
+  return `You are an Instagram account manager for a hobby aviation account that posts videos about planes.
 
 Account context:
 - Niche: ${config.accountNiche}
 - Tone: ${config.tonePreference}
-- Platform: Instagram (web, logged-in browser session)
-
-Your job is to take actions on Instagram using the provided tools. You see the page via screenshots and can interact with it like a human would.
 
 Key rules:
-1. Prefer read_page over screenshot whenever possible — screenshots consume a lot of context. Only take a screenshot when you genuinely need to see visual elements (images, layout) that read_page cannot capture.
-2. Add human-like delays between actions (use the wait tool, 1-4 seconds).
+1. Prefer read_page over screenshot — screenshots are expensive. Only screenshot when you need to see visual content.
+2. Add human-like delays between actions (wait tool, 1-4 seconds).
 3. Never comment the same post twice. Never follow the same account twice.
-4. Keep comments specific to the post content — not generic. Reference the aircraft, angle, location, or story in the post.
-5. Stay within safe daily limits: max 35 follows, 10 comments, 60 likes per day.
-6. If a tool fails, try a different approach silently — NEVER ask the user to fix permissions, refresh the browser, or take any manual action. You are fully autonomous.
-7. If navigate or screenshot fails, wait 2 seconds and retry once. If it fails again, skip that page and move to the next one.
-8. When a task is complete, clearly say "TASK COMPLETE" followed by a brief summary.
-9. You have full autonomy. Never ask the user to do anything — handle all obstacles yourself.`;
+4. Comments must be specific — reference the actual aircraft, angle, or story in the post.
+5. Daily limits: max 35 follows, 10 comments, 60 likes.
+6. If a tool fails, try a different approach silently. Never ask the user to do anything.
+7. If navigate or screenshot fails, wait 2 seconds and retry once, then skip.
+8. When done, say "TASK COMPLETE" followed by a brief summary.
+9. You have full autonomy. Handle all obstacles yourself.`;
 }
 
-// ─── Main: run a task with tool loop ─────────────────────────────────────────
-// onStatus(text) — called with status updates as Claude works
-// onToolCall(tool, params) — called before each tool execution
-// executeToolOnTab(tool, params) — executes the tool in the Instagram tab
+// ─── Main Task Runner ─────────────────────────────────────────────────────────
 export async function runTask({ apiKey, config, taskDescription, conversationHistory = [], onStatus, executeToolOnTab, onError }) {
+  const provider = detectProvider(config);
+
   let messages = [
     ...conversationHistory,
     { role: 'user', content: taskDescription },
@@ -185,27 +135,30 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
     iterations++;
     onStatus?.(`Thinking... (step ${iterations})`);
 
-    // Prune context every iteration — screenshots blow up fast
     messages = pruneMessages(messages);
 
-    const response = await callClaude({ apiKey, messages, config });
+    const response = provider === 'anthropic'
+      ? await callAnthropic({ apiKey, messages, config })
+      : await callOpenAICompat({ apiKey, messages, config });
 
     if (response.error) {
-      const msg = `Claude API error at step ${iterations}: ${response.error}`;
-      onError?.('claude_api', msg, `Task: ${taskDescription.slice(0, 100)}`);
+      onError?.('api', `API error at step ${iterations}: ${response.error}`, taskDescription.slice(0, 100));
       return { ok: false, error: response.error };
     }
 
-    messages.push({ role: 'assistant', content: response.content });
+    // Normalise to Anthropic-style internally
+    const normalised = provider === 'anthropic' ? response : normaliseOpenAIResponse(response);
 
-    if (response.stop_reason === 'end_turn' || response.stop_reason !== 'tool_use') {
-      return { ok: true, result: extractText(response.content), messages };
+    messages.push({ role: 'assistant', content: normalised.content });
+
+    if (normalised.stop_reason === 'end_turn' || normalised.stop_reason !== 'tool_use') {
+      return { ok: true, result: extractText(normalised.content), messages };
     }
 
-    // Process tool calls
+    // Execute tool calls
     const toolResults = [];
 
-    for (const block of response.content) {
+    for (const block of normalised.content) {
       if (block.type !== 'tool_use') continue;
 
       const { id, name, input } = block;
@@ -213,21 +166,20 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
 
       let result;
       try {
-        result = await executeToolOnTab(name === 'screenshot' ? 'screenshot' : name, name === 'screenshot' ? {} : input);
+        result = await executeToolOnTab(name, name === 'screenshot' ? {} : input);
       } catch (err) {
         result = { ok: false, error: err.message };
         onError?.('tool_execution', `Tool "${name}" threw: ${err.message}`, JSON.stringify(input).slice(0, 200));
       }
 
-      // Log tool-level failures so they surface in the activity log
       if (!result?.ok) {
         onError?.('tool_result', `Tool "${name}" failed: ${result?.error || 'unknown'}`, JSON.stringify(input).slice(0, 200));
       }
 
-      // For screenshots, send as a proper image block so we can prune it cleanly later
+      // Screenshots → image blocks; everything else → JSON string
       let toolContent;
       const screenshot = result?.data?.screenshot;
-      if (screenshot && screenshot.startsWith('data:')) {
+      if (screenshot?.startsWith('data:')) {
         const [header, b64] = screenshot.split(',');
         const mediaType = header.match(/data:(.*);/)?.[1] || 'image/jpeg';
         toolContent = [
@@ -238,143 +190,244 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
         toolContent = JSON.stringify(result);
       }
 
-      toolResults.push({
-        type:        'tool_result',
-        tool_use_id: id,
-        content:     toolContent,
-      });
+      toolResults.push({ type: 'tool_result', tool_use_id: id, content: toolContent });
     }
 
     messages.push({ role: 'user', content: toolResults });
   }
 
-  const iterError = `Reached maximum tool iterations (${MAX_TOOL_ITERATIONS}). Task may be incomplete.`;
-  onError?.('iteration_cap', iterError, taskDescription.slice(0, 100));
-  return { ok: false, error: iterError, messages };
+  const err = `Reached maximum iterations (${MAX_TOOL_ITERATIONS}).`;
+  onError?.('iteration_cap', err, taskDescription.slice(0, 100));
+  return { ok: false, error: err, messages };
+}
+
+// ─── Chat (no tools, single turn) ────────────────────────────────────────────
+export async function chat({ apiKey, config, systemOverride, prompt, conversationHistory = [] }) {
+  const provider = detectProvider(config);
+  const messages = [...conversationHistory, { role: 'user', content: prompt }];
+
+  const response = provider === 'anthropic'
+    ? await callAnthropic({ apiKey, messages, config, systemOverride, noTools: true })
+    : await callOpenAICompat({ apiKey, messages, config, systemOverride, noTools: true });
+
+  if (response.error) return { ok: false, error: response.error };
+
+  const normalised = provider === 'anthropic' ? response : normaliseOpenAIResponse(response);
+  return { ok: true, text: extractText(normalised.content) };
+}
+
+// ─── Anthropic API Call ───────────────────────────────────────────────────────
+async function callAnthropic({ apiKey, messages, config, systemOverride, noTools }) {
+  try {
+    const body = {
+      model:      config.modelId || 'claude-sonnet-4-5',
+      max_tokens: MAX_TOKENS,
+      system:     systemOverride || buildSystemPrompt(config),
+      messages:   toAnthropicMessages(messages),
+    };
+    if (!noTools) body.tools = INSTAGRAM_TOOLS;
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method:  'POST',
+      headers: {
+        'Content-Type':      'application/json',
+        'x-api-key':         apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (res.status === 401) return { error: 'Invalid API key (401). Check Settings.' };
+      if (res.status === 429) return { error: 'Rate limited (429). Will retry next cycle.' };
+      return { error: err?.error?.message || `HTTP ${res.status}` };
+    }
+    return await res.json();
+  } catch (err) {
+    return { error: err.message === 'Failed to fetch' ? 'Network error — check connection.' : err.message };
+  }
+}
+
+// ─── OpenAI-Compatible API Call (Kimi, OpenRouter, etc.) ─────────────────────
+async function callOpenAICompat({ apiKey, messages, config, systemOverride, noTools }) {
+  try {
+    const system = systemOverride || buildSystemPrompt(config);
+    const oaiMessages = [
+      { role: 'system', content: system },
+      ...toOpenAIMessages(messages),
+    ];
+
+    const body = {
+      model:      config.modelId || 'kimi-k2',
+      max_tokens: MAX_TOKENS,
+      messages:   oaiMessages,
+    };
+    if (!noTools) {
+      body.tools = toOpenAITools(INSTAGRAM_TOOLS);
+      body.tool_choice = 'auto';
+    }
+
+    const baseUrl = config.apiBaseUrl || 'https://api.moonshot.cn/v1';
+
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (res.status === 401) return { error: 'Invalid API key (401). Check Settings.' };
+      if (res.status === 429) return { error: 'Rate limited (429). Will retry next cycle.' };
+      return { error: err?.error?.message || `HTTP ${res.status}` };
+    }
+    return await res.json();
+  } catch (err) {
+    return { error: err.message === 'Failed to fetch' ? 'Network error — check connection.' : err.message };
+  }
+}
+
+// ─── Format Converters ────────────────────────────────────────────────────────
+
+// Anthropic tools → OpenAI function tools
+function toOpenAITools(tools) {
+  return tools.map(t => ({
+    type: 'function',
+    function: {
+      name:        t.name,
+      description: t.description,
+      parameters:  t.input_schema,
+    },
+  }));
+}
+
+// Normalised internal messages → Anthropic wire format
+// (strips tool_result image blocks if provider doesn't support them etc.)
+function toAnthropicMessages(messages) {
+  return messages; // already in Anthropic format internally
+}
+
+// Normalised internal messages → OpenAI wire format
+function toOpenAIMessages(messages) {
+  const out = [];
+  for (const msg of messages) {
+    if (msg.role === 'assistant') {
+      // Convert tool_use blocks → tool_calls
+      if (Array.isArray(msg.content)) {
+        const toolCalls = msg.content
+          .filter(b => b.type === 'tool_use')
+          .map(b => ({
+            id:       b.id,
+            type:     'function',
+            function: { name: b.name, arguments: JSON.stringify(b.input) },
+          }));
+        const text = msg.content.filter(b => b.type === 'text').map(b => b.text).join('');
+        out.push({ role: 'assistant', content: text || null, tool_calls: toolCalls.length ? toolCalls : undefined });
+      } else {
+        out.push({ role: 'assistant', content: msg.content });
+      }
+    } else if (msg.role === 'user' && Array.isArray(msg.content)) {
+      // Split tool_result blocks into separate tool messages
+      const toolResults = msg.content.filter(b => b.type === 'tool_result');
+      const userText    = msg.content.filter(b => b.type !== 'tool_result');
+
+      for (const tr of toolResults) {
+        const content = Array.isArray(tr.content)
+          ? tr.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+          : String(tr.content);
+        out.push({ role: 'tool', tool_call_id: tr.tool_use_id, content });
+      }
+      if (userText.length) {
+        out.push({ role: 'user', content: userText.map(b => b.text || '').join('\n') });
+      }
+    } else {
+      out.push({ role: msg.role, content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content) });
+    }
+  }
+  return out;
+}
+
+// OpenAI response → normalised Anthropic-style response
+function normaliseOpenAIResponse(response) {
+  const choice = response.choices?.[0];
+  if (!choice) return { error: 'No choices in response' };
+
+  const msg = choice.message;
+  const content = [];
+
+  if (msg.content) content.push({ type: 'text', text: msg.content });
+
+  if (msg.tool_calls?.length) {
+    for (const tc of msg.tool_calls) {
+      content.push({
+        type:  'tool_use',
+        id:    tc.id,
+        name:  tc.function.name,
+        input: JSON.parse(tc.function.arguments || '{}'),
+      });
+    }
+  }
+
+  const stop_reason = msg.tool_calls?.length ? 'tool_use' : 'end_turn';
+  return { content, stop_reason };
+}
+
+// ─── Provider Detection ───────────────────────────────────────────────────────
+function detectProvider(config) {
+  // If a custom base URL is set, assume OpenAI-compatible
+  if (config.apiBaseUrl) return 'openai_compat';
+  // Default to Anthropic
+  return 'anthropic';
 }
 
 // ─── Context Pruner ───────────────────────────────────────────────────────────
-// Called every iteration. Keeps messages under 200k tokens by:
-// 1. Stripping image blocks from ALL tool_results except the very last screenshot
-// 2. Hard-capping at last 30 messages when history grows long
+// Strips old screenshots and keeps message pairs intact.
 function pruneMessages(messages) {
-  // Find index of the last message that contains a screenshot image block
-  let lastScreenshotMsgIdx = -1;
+  // Step 1: strip image blocks from all but the last screenshot tool_result
+  let lastScreenshotIdx = -1;
   messages.forEach((msg, i) => {
     if (msg.role !== 'user' || !Array.isArray(msg.content)) return;
-    const hasScreenshot = msg.content.some(b =>
-      b.type === 'tool_result' && Array.isArray(b.content) &&
-      b.content.some(c => c.type === 'image')
-    );
-    if (hasScreenshot) lastScreenshotMsgIdx = i;
+    if (msg.content.some(b => b.type === 'tool_result' && Array.isArray(b.content) && b.content.some(c => c.type === 'image'))) {
+      lastScreenshotIdx = i;
+    }
   });
 
-  // Strip image data from every screenshot tool_result except the last one
-  messages = messages.map((msg, msgIdx) => {
-    if (msg.role !== 'user' || !Array.isArray(msg.content)) return msg;
-    if (msgIdx === lastScreenshotMsgIdx) return msg; // keep latest screenshot
-
+  messages = messages.map((msg, i) => {
+    if (i === lastScreenshotIdx || msg.role !== 'user' || !Array.isArray(msg.content)) return msg;
     return {
       ...msg,
       content: msg.content.map(block => {
         if (block.type !== 'tool_result' || !Array.isArray(block.content)) return block;
-        const hasImage = block.content.some(c => c.type === 'image');
-        if (!hasImage) return block;
-        // Replace image blocks with a lightweight placeholder
-        return {
-          ...block,
-          content: [{ type: 'text', text: '[screenshot removed — page already processed]' }],
-        };
+        if (!block.content.some(c => c.type === 'image')) return block;
+        return { ...block, content: [{ type: 'text', text: '[screenshot removed]' }] };
       }),
     };
   });
 
-  // Hard cap: keep first message (task description) + last 25 messages
+  // Step 2: hard cap — keep first message + last 25, but NEVER start tail on
+  // a tool_result user message (that would orphan it from its tool_use pair)
   if (messages.length > 30) {
-    messages = [messages[0], ...messages.slice(-25)];
+    const first = messages[0];
+    let tail = messages.slice(-25);
+
+    // Walk forward until we find an assistant message to anchor the tail
+    let anchor = 0;
+    while (anchor < tail.length && !(tail[anchor].role === 'assistant')) anchor++;
+    if (anchor > 0 && anchor < tail.length) tail = tail.slice(anchor);
+
+    messages = [first, ...tail];
   }
 
   return messages;
 }
 
-// ─── Single Claude API Call ───────────────────────────────────────────────────
-async function callClaude({ apiKey, messages, config }) {
-  try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type':            'application/json',
-        'x-api-key':               apiKey,
-        'anthropic-version':       '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model:      CLAUDE_MODEL,
-        max_tokens: MAX_TOKENS,
-        system:     buildSystemPrompt(config),
-        tools:      INSTAGRAM_TOOLS,
-        messages,
-      }),
-    });
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      const msg = err?.error?.message || `HTTP ${response.status} ${response.statusText}`;
-      // Surface rate limits and auth errors clearly
-      if (response.status === 401) return { error: `Invalid API key (401). Check Settings.` };
-      if (response.status === 429) return { error: `Rate limited by Anthropic (429). Will retry next cycle.` };
-      if (response.status === 529) return { error: `Anthropic API overloaded (529). Will retry next cycle.` };
-      return { error: msg };
-    }
-
-    return await response.json();
-  } catch (err) {
-    // Network-level error (DNS, CORS, service worker killed, etc.)
-    const detail = err.name === 'TypeError' && err.message === 'Failed to fetch'
-      ? 'Network error — check internet connection or extension permissions.'
-      : err.message;
-    return { error: detail };
-  }
-}
-
-// ─── Chat (single turn, no tool loop) ────────────────────────────────────────
-// Used for caption generation, hashtag suggestions, briefings — no browser actions needed.
-export async function chat({ apiKey, config, systemOverride, prompt, conversationHistory = [] }) {
-  const messages = [
-    ...conversationHistory,
-    { role: 'user', content: prompt },
-  ];
-
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type':            'application/json',
-      'x-api-key':               apiKey,
-      'anthropic-version':       '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model:      CLAUDE_MODEL,
-      max_tokens: MAX_TOKENS,
-      system:     systemOverride || buildSystemPrompt(config),
-      messages,
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    return { ok: false, error: err?.error?.message || `API error ${response.status}` };
-  }
-
-  const data = await response.json();
-  return { ok: true, text: extractText(data.content) };
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function extractText(content) {
   if (!Array.isArray(content)) return String(content);
-  return content
-    .filter(b => b.type === 'text')
-    .map(b => b.text)
-    .join('\n');
+  return content.filter(b => b.type === 'text').map(b => b.text).join('\n');
 }

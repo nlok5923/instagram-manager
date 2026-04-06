@@ -131,11 +131,21 @@
   <!-- ── Settings Tab ───────────────────────────────────────────────── -->
   <section id="tab-settings" class="tab-content">
 
-    <div class="settings-section-label">Claude</div>
+    <div class="settings-section-label">Claude / AI Model</div>
     <div class="settings-group">
-      <label for="input-api-key">Claude API Key</label>
-      <input type="password" id="input-api-key" placeholder="sk-ant-…" autocomplete="off" />
-      <small>Stored locally, only sent to Anthropic's API.</small>
+      <label for="input-api-key">API Key</label>
+      <input type="password" id="input-api-key" placeholder="sk-ant-… or Kimi key" autocomplete="off" />
+      <small>Stored locally. For Anthropic: sk-ant-… · For Kimi: your Moonshot key.</small>
+    </div>
+    <div class="settings-group">
+      <label for="input-model-id">Model ID</label>
+      <input type="text" id="input-model-id" placeholder="e.g. kimi-k2 or claude-sonnet-4-5" />
+      <small>Leave blank to use the default (claude-sonnet-4-5 for Anthropic, kimi-k2 for Kimi).</small>
+    </div>
+    <div class="settings-group">
+      <label for="input-api-base-url">API Base URL</label>
+      <input type="text" id="input-api-base-url" placeholder="Leave blank for Anthropic" />
+      <small>For Kimi: https://api.moonshot.cn/v1 · Blank = Anthropic.</small>
     </div>
     <div class="settings-group">
       <label for="input-niche">Account Niche</label>

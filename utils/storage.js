@@ -31,6 +31,8 @@ const KEYS = {
   TELEGRAM_BOT_TOKEN:   'config_tg_token',
   TELEGRAM_CHAT_ID:     'config_tg_chat_id',
   AUTONOMOUS_MODE:      'config_autonomous_mode',
+  MODEL_ID:             'config_model_id',
+  API_BASE_URL:         'config_api_base_url',
 
   // Activity log (what the AI has done)
   AUTONOMOUS_LOG:       'mem_autonomous_log',
@@ -254,6 +256,7 @@ async function getConfig() {
   const keys = [
     KEYS.CLAUDE_API_KEY, KEYS.ACCOUNT_NICHE, KEYS.TONE_PREFERENCE,
     KEYS.TELEGRAM_BOT_TOKEN, KEYS.TELEGRAM_CHAT_ID, KEYS.AUTONOMOUS_MODE,
+    KEYS.MODEL_ID, KEYS.API_BASE_URL,
   ];
   const result = await chrome.storage.local.get(keys);
   return {
@@ -263,6 +266,8 @@ async function getConfig() {
     telegramBotToken:  result[KEYS.TELEGRAM_BOT_TOKEN]   || '',
     telegramChatId:    result[KEYS.TELEGRAM_CHAT_ID]     || '',
     autonomousMode:    result[KEYS.AUTONOMOUS_MODE]      ?? true,
+    modelId:           result[KEYS.MODEL_ID]             || '',
+    apiBaseUrl:        result[KEYS.API_BASE_URL]         || '',
   };
 }
 
@@ -274,6 +279,8 @@ async function saveConfig(config) {
   if (config.telegramBotToken  !== undefined) updates[KEYS.TELEGRAM_BOT_TOKEN]  = config.telegramBotToken;
   if (config.telegramChatId    !== undefined) updates[KEYS.TELEGRAM_CHAT_ID]    = config.telegramChatId;
   if (config.autonomousMode    !== undefined) updates[KEYS.AUTONOMOUS_MODE]     = config.autonomousMode;
+  if (config.modelId           !== undefined) updates[KEYS.MODEL_ID]            = config.modelId;
+  if (config.apiBaseUrl        !== undefined) updates[KEYS.API_BASE_URL]        = config.apiBaseUrl;
   await chrome.storage.local.set(updates);
 }
 
