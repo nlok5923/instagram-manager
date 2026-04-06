@@ -124,15 +124,16 @@
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,   'value')?.set ||
       Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
 
+    let accumulated = '';
     for (const char of text) {
-      const current = el.value || '';
-      if (nativeSetter) nativeSetter.call(el, current + char);
-      else el.value = current + char;
+      accumulated += char;
+      if (nativeSetter) nativeSetter.call(el, accumulated);
+      else el.value = accumulated;
 
       el.dispatchEvent(new Event('input',   { bubbles: true }));
       el.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
       el.dispatchEvent(new KeyboardEvent('keyup',   { key: char, bubbles: true }));
-      await sleep(randomBetween(30, 80));
+      await sleep(randomBetween(40, 90));
     }
 
     el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -154,16 +155,19 @@
     input.click();
     await sleep(400);
 
-    // 2. Type the comment using native setter (required for React)
+    // 2. Type the comment using native setter (required for React).
+    // We track accumulated text ourselves — never read input.value back,
+    // because Instagram's React re-renders reset it between keystrokes.
     const nativeSetter =
       Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
 
+    let accumulated = '';
     for (const char of text) {
-      const current = input.value || '';
-      if (nativeSetter) nativeSetter.call(input, current + char);
-      else input.value = current + char;
+      accumulated += char;
+      if (nativeSetter) nativeSetter.call(input, accumulated);
+      else input.value = accumulated;
       input.dispatchEvent(new Event('input', { bubbles: true }));
-      await sleep(randomBetween(30, 80));
+      await sleep(randomBetween(40, 90));
     }
     input.dispatchEvent(new Event('change', { bubbles: true }));
 
