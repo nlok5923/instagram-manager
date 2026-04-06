@@ -124,16 +124,23 @@
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,   'value')?.set ||
       Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
 
-    let accumulated = '';
-    for (const char of text) {
-      accumulated += char;
-      if (nativeSetter) nativeSetter.call(el, accumulated);
-      else el.value = accumulated;
+    // Use execCommand for React-controlled inputs
+    if (clearFirst) {
+      document.execCommand('selectAll', false);
+      document.execCommand('delete', false);
+      await sleep(100);
+    }
 
-      el.dispatchEvent(new Event('input',   { bubbles: true }));
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
-      el.dispatchEvent(new KeyboardEvent('keyup',   { key: char, bubbles: true }));
-      await sleep(randomBetween(40, 90));
+    const inserted = document.execCommand('insertText', false, text);
+
+    if (!inserted) {
+      // Fallback: native setter with full string
+      const nativeSetter =
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set ||
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+      if (nativeSetter) nativeSetter.call(el, (clearFirst ? '' : (el.value || '')) + text);
+      else el.value = (clearFirst ? '' : (el.value || '')) + text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
     el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -155,21 +162,31 @@
     input.click();
     await sleep(400);
 
-    // 2. Type the comment using native setter (required for React).
-    // We track accumulated text ourselves — never read input.value back,
-    // because Instagram's React re-renders reset it between keystrokes.
-    const nativeSetter =
-      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+    // 2. Insert the full text at once using execCommand — the only reliable
+    // method for React-controlled textareas. Native setter + input event
+    // gets overwritten by React's re-render cycle.
+    input.focus();
+    await sleep(200);
 
-    let accumulated = '';
-    for (const char of text) {
-      accumulated += char;
-      if (nativeSetter) nativeSetter.call(input, accumulated);
-      else input.value = accumulated;
+    // Clear any existing content first
+    document.execCommand('selectAll', false);
+    document.execCommand('delete', false);
+    await sleep(100);
+
+    // Insert the full comment text in one shot
+    const inserted = document.execCommand('insertText', false, text);
+
+    if (!inserted) {
+      // execCommand not available — fallback to native setter with full string
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype, 'value'
+      )?.set;
+      if (nativeSetter) nativeSetter.call(input, text);
+      else input.value = text;
       input.dispatchEvent(new Event('input', { bubbles: true }));
-      await sleep(randomBetween(40, 90));
     }
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    await sleep(300);
 
     // 3. Wait up to 3s for the Post/Submit button to appear
     let submitBtn = null;

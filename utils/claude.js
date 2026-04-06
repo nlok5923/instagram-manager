@@ -185,10 +185,8 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
     iterations++;
     onStatus?.(`Thinking... (step ${iterations})`);
 
-    // Prune context every 5 steps to stay under the 200k token limit
-    if (iterations % 5 === 0) {
-      messages = pruneMessages(messages);
-    }
+    // Prune context every iteration — screenshots blow up fast
+    messages = pruneMessages(messages);
 
     const response = await callClaude({ apiKey, messages, config });
 
@@ -226,10 +224,24 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
         onError?.('tool_result', `Tool "${name}" failed: ${result?.error || 'unknown'}`, JSON.stringify(input).slice(0, 200));
       }
 
+      // For screenshots, send as a proper image block so we can prune it cleanly later
+      let toolContent;
+      const screenshot = result?.data?.screenshot;
+      if (screenshot && screenshot.startsWith('data:')) {
+        const [header, b64] = screenshot.split(',');
+        const mediaType = header.match(/data:(.*);/)?.[1] || 'image/jpeg';
+        toolContent = [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: b64 } },
+          { type: 'text',  text: 'Screenshot taken.' },
+        ];
+      } else {
+        toolContent = JSON.stringify(result);
+      }
+
       toolResults.push({
         type:        'tool_result',
         tool_use_id: id,
-        content:     JSON.stringify(result),
+        content:     toolContent,
       });
     }
 
@@ -242,49 +254,44 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
 }
 
 // ─── Context Pruner ───────────────────────────────────────────────────────────
-// Keeps the message list under the 200k token limit by:
-// 1. Stripping base64 screenshot data from all but the last 2 tool results
-// 2. Removing middle message pairs when history grows very long
+// Called every iteration. Keeps messages under 200k tokens by:
+// 1. Stripping image blocks from ALL tool_results except the very last screenshot
+// 2. Hard-capping at last 30 messages when history grows long
 function pruneMessages(messages) {
-  // Step 1: strip screenshot base64 from all tool_result messages except the last 2
-  let screenshotsSeen = 0;
-  const screenshotCount = messages.reduce((n, msg) => {
-    if (msg.role !== 'user' || !Array.isArray(msg.content)) return n;
-    return n + msg.content.filter(b => {
-      if (b.type !== 'tool_result') return false;
-      try { return !!JSON.parse(b.content)?.data?.screenshot; } catch { return false; }
-    }).length;
-  }, 0);
+  // Find index of the last message that contains a screenshot image block
+  let lastScreenshotMsgIdx = -1;
+  messages.forEach((msg, i) => {
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) return;
+    const hasScreenshot = msg.content.some(b =>
+      b.type === 'tool_result' && Array.isArray(b.content) &&
+      b.content.some(c => c.type === 'image')
+    );
+    if (hasScreenshot) lastScreenshotMsgIdx = i;
+  });
 
-  const keepLastN = 2; // keep last N screenshots intact
-
-  messages = messages.map(msg => {
+  // Strip image data from every screenshot tool_result except the last one
+  messages = messages.map((msg, msgIdx) => {
     if (msg.role !== 'user' || !Array.isArray(msg.content)) return msg;
+    if (msgIdx === lastScreenshotMsgIdx) return msg; // keep latest screenshot
+
     return {
       ...msg,
       content: msg.content.map(block => {
-        if (block.type !== 'tool_result') return block;
-        try {
-          const parsed = JSON.parse(block.content);
-          if (parsed?.data?.screenshot) {
-            screenshotsSeen++;
-            // Strip all but the last keepLastN screenshots
-            if (screenshotsSeen <= screenshotCount - keepLastN) {
-              return { ...block, content: JSON.stringify({ ok: true, data: { note: '[screenshot removed to save context]' } }) };
-            }
-          }
-        } catch {}
-        return block;
+        if (block.type !== 'tool_result' || !Array.isArray(block.content)) return block;
+        const hasImage = block.content.some(c => c.type === 'image');
+        if (!hasImage) return block;
+        // Replace image blocks with a lightweight placeholder
+        return {
+          ...block,
+          content: [{ type: 'text', text: '[screenshot removed — page already processed]' }],
+        };
       }),
     };
   });
 
-  // Step 2: if still very long (>60 messages), drop middle pairs
-  // Always keep: first message (task) + last 20 messages
-  if (messages.length > 60) {
-    const first = messages.slice(0, 1);
-    const tail  = messages.slice(-20);
-    messages = [...first, ...tail];
+  // Hard cap: keep first message (task description) + last 25 messages
+  if (messages.length > 30) {
+    messages = [messages[0], ...messages.slice(-25)];
   }
 
   return messages;
