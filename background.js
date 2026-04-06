@@ -529,7 +529,7 @@ async function captureTabScreenshot(tabId) {
   await sleep(500);
 
   return new Promise(resolve => {
-    chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 70 }, dataUrl => {
+    chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 35 }, dataUrl => {
       if (chrome.runtime.lastError) {
         resolve({ ok: false, error: chrome.runtime.lastError.message });
       } else {

@@ -158,7 +158,7 @@ Account context:
 Your job is to take actions on Instagram using the provided tools. You see the page via screenshots and can interact with it like a human would.
 
 Key rules:
-1. Always take a screenshot first to understand the current page state before acting.
+1. Prefer read_page over screenshot whenever possible — screenshots consume a lot of context. Only take a screenshot when you genuinely need to see visual elements (images, layout) that read_page cannot capture.
 2. Add human-like delays between actions (use the wait tool, 1-4 seconds).
 3. Never comment the same post twice. Never follow the same account twice.
 4. Keep comments specific to the post content — not generic. Reference the aircraft, angle, location, or story in the post.
@@ -174,7 +174,7 @@ Key rules:
 // onToolCall(tool, params) — called before each tool execution
 // executeToolOnTab(tool, params) — executes the tool in the Instagram tab
 export async function runTask({ apiKey, config, taskDescription, conversationHistory = [], onStatus, executeToolOnTab, onError }) {
-  const messages = [
+  let messages = [
     ...conversationHistory,
     { role: 'user', content: taskDescription },
   ];
@@ -184,6 +184,11 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
   while (iterations < MAX_TOOL_ITERATIONS) {
     iterations++;
     onStatus?.(`Thinking... (step ${iterations})`);
+
+    // Prune context every 5 steps to stay under the 200k token limit
+    if (iterations % 5 === 0) {
+      messages = pruneMessages(messages);
+    }
 
     const response = await callClaude({ apiKey, messages, config });
 
@@ -234,6 +239,55 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
   const iterError = `Reached maximum tool iterations (${MAX_TOOL_ITERATIONS}). Task may be incomplete.`;
   onError?.('iteration_cap', iterError, taskDescription.slice(0, 100));
   return { ok: false, error: iterError, messages };
+}
+
+// ─── Context Pruner ───────────────────────────────────────────────────────────
+// Keeps the message list under the 200k token limit by:
+// 1. Stripping base64 screenshot data from all but the last 2 tool results
+// 2. Removing middle message pairs when history grows very long
+function pruneMessages(messages) {
+  // Step 1: strip screenshot base64 from all tool_result messages except the last 2
+  let screenshotsSeen = 0;
+  const screenshotCount = messages.reduce((n, msg) => {
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) return n;
+    return n + msg.content.filter(b => {
+      if (b.type !== 'tool_result') return false;
+      try { return !!JSON.parse(b.content)?.data?.screenshot; } catch { return false; }
+    }).length;
+  }, 0);
+
+  const keepLastN = 2; // keep last N screenshots intact
+
+  messages = messages.map(msg => {
+    if (msg.role !== 'user' || !Array.isArray(msg.content)) return msg;
+    return {
+      ...msg,
+      content: msg.content.map(block => {
+        if (block.type !== 'tool_result') return block;
+        try {
+          const parsed = JSON.parse(block.content);
+          if (parsed?.data?.screenshot) {
+            screenshotsSeen++;
+            // Strip all but the last keepLastN screenshots
+            if (screenshotsSeen <= screenshotCount - keepLastN) {
+              return { ...block, content: JSON.stringify({ ok: true, data: { note: '[screenshot removed to save context]' } }) };
+            }
+          }
+        } catch {}
+        return block;
+      }),
+    };
+  });
+
+  // Step 2: if still very long (>60 messages), drop middle pairs
+  // Always keep: first message (task) + last 20 messages
+  if (messages.length > 60) {
+    const first = messages.slice(0, 1);
+    const tail  = messages.slice(-20);
+    messages = [...first, ...tail];
+  }
+
+  return messages;
 }
 
 // ─── Single Claude API Call ───────────────────────────────────────────────────
