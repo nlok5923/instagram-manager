@@ -23,7 +23,7 @@
   <!-- ── Tab Bar ───────────────────────────────────────────────────── -->
   <nav class="tabs">
     <button class="tab active" data-tab="chat">Chat</button>
-    <button class="tab" data-tab="activity">Activity</button>
+    <button class="tab" data-tab="activity">Activity <span id="error-badge" class="error-badge hidden"></span></button>
     <button class="tab" data-tab="tools">Tools</button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
@@ -50,9 +50,13 @@
   <section id="tab-activity" class="tab-content">
     <div class="queue-header">
       <h3>Activity Log</h3>
-      <span class="hint">Everything the AI has done on your account.</span>
+      <span class="hint">Everything the AI has done — actions and errors.</span>
     </div>
-    <div id="activity-log-list" class="queue-list">
+    <div class="activity-toolbar">
+      <span id="activity-summary">—</span>
+      <button class="clear-btn" id="btn-clear-errors">Clear errors</button>
+    </div>
+    <div id="activity-log-list" class="log-list">
       <div class="empty-state">No activity yet. The AI will start acting on its schedule.</div>
     </div>
   </section>

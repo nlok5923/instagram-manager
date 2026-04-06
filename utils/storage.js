@@ -38,6 +38,9 @@ const KEYS = {
 
   // Chat history
   CHAT_HISTORY:         'mem_chat_history',
+
+  // Error log
+  ERROR_LOG:            'mem_error_log',
 };
 
 // ─── Daily Limits ─────────────────────────────────────────────────────────────
@@ -304,6 +307,36 @@ async function getActivityLog() {
   return log;
 }
 
+// ─── Error Log ───────────────────────────────────────────────────────────────
+// entry shape: { context, message, detail, occurredAt }
+async function logError(context, message, detail = '') {
+  const { [KEYS.ERROR_LOG]: log = [] } =
+    await chrome.storage.local.get(KEYS.ERROR_LOG);
+
+  const entry = {
+    context,
+    message: String(message).slice(0, 300),
+    detail:  String(detail).slice(0, 500),
+    occurredAt: Date.now(),
+  };
+
+  log.unshift(entry);
+  await chrome.storage.local.set({ [KEYS.ERROR_LOG]: log.slice(0, 200) });
+
+  // Also push into the activity log so it's visible in one place
+  await addActivity({ type: 'error', description: `[${context}] ${message}` });
+}
+
+async function getErrorLog() {
+  const { [KEYS.ERROR_LOG]: log = [] } =
+    await chrome.storage.local.get(KEYS.ERROR_LOG);
+  return log;
+}
+
+async function clearErrorLog() {
+  await chrome.storage.local.set({ [KEYS.ERROR_LOG]: [] });
+}
+
 // ─── Chat History ─────────────────────────────────────────────────────────────
 async function saveChatHistory(messages) {
   // Keep last 40 messages to avoid storage bloat
@@ -350,4 +383,7 @@ export {
   getActivityLog,
   saveChatHistory,
   loadChatHistory,
+  logError,
+  getErrorLog,
+  clearErrorLog,
 };

@@ -28,6 +28,8 @@ import {
   getNextHashtagCluster,
   saveChatHistory,
   loadChatHistory,
+  logError,
+  getErrorLog,
 } from './utils/storage.js';
 import {
   notifyPostIdea,
@@ -85,7 +87,8 @@ async function handlePanelMessage({ type, payload }) {
   switch (type) {
     case 'run_task':      return await startTask(payload.task, payload.conversationHistory);
     case 'stop_task':     stopActiveTask(); return { ok: true };
-    case 'get_activity':  return { ok: true, log: await getActivityLog() };
+    case 'get_activity':   return { ok: true, log: await getActivityLog() };
+    case 'get_error_log':  return { ok: true, log: await getErrorLog() };
     case 'get_daily_counts': return { ok: true, counts: await getDailyCounts() };
     case 'chat':          return await handleChat(payload.prompt, payload.history);
 
@@ -129,6 +132,10 @@ async function startTask(taskDescription, conversationHistory = []) {
     executeToolOnTab: async (tool, params) => {
       if (signal.aborted) return { ok: false, error: 'Task aborted' };
       return await executeToolOnInstagramTab(tool, params);
+    },
+    onError: async (context, message, detail) => {
+      await logError(context, message, detail);
+      sendToPanel({ type: 'activity_updated' });
     },
   });
 
@@ -350,12 +357,17 @@ function scheduleAlarms() {
 }
 
 chrome.alarms.onAlarm.addListener(async alarm => {
-  switch (alarm.name) {
-    case 'engagement_cycle':  await runEngagementCycle(); break;
-    case 'morning_scan':      await runTrendScan();        break;
-    case 'evening_engagement':await runEngagementCycle(); break;
-    case 'daily_digest':      await sendEveningDigest();   break;
-    case 'golden_hour_check': await runGoldenHourCycle();  break;
+  try {
+    switch (alarm.name) {
+      case 'engagement_cycle':   await runEngagementCycle(); break;
+      case 'morning_scan':       await runTrendScan();        break;
+      case 'evening_engagement': await runEngagementCycle(); break;
+      case 'daily_digest':       await sendEveningDigest();   break;
+      case 'golden_hour_check':  await runGoldenHourCycle();  break;
+    }
+  } catch (err) {
+    await logError(`alarm:${alarm.name}`, err.message, err.stack?.slice(0, 300) || '');
+    sendToPanel({ type: 'activity_updated' });
   }
 });
 
@@ -412,10 +424,18 @@ async function tgNotify(type, payload) {
   const { telegramBotToken: botToken, telegramChatId: chatId } = config;
   if (!botToken || !chatId) return;
 
-  switch (type) {
-    case 'post_idea':   return await notifyPostIdea({ botToken, chatId, idea: payload.idea });
-    case 'golden_hour': return await notifyGoldenHour({ botToken, chatId, ...payload });
-    case 'alert':       return await notifyAlert({ botToken, chatId, title: payload.title, body: payload.body });
+  let result;
+  try {
+    switch (type) {
+      case 'post_idea':   result = await notifyPostIdea({ botToken, chatId, idea: payload.idea }); break;
+      case 'golden_hour': result = await notifyGoldenHour({ botToken, chatId, ...payload }); break;
+      case 'alert':       result = await notifyAlert({ botToken, chatId, title: payload.title, body: payload.body }); break;
+    }
+    if (result && !result.ok) {
+      await logError('telegram', `Failed to send "${type}" notification: ${result.error}`);
+    }
+  } catch (err) {
+    await logError('telegram', `Exception sending "${type}": ${err.message}`);
   }
 }
 

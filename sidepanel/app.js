@@ -222,23 +222,64 @@ async function refreshActivityLog() {
   const result = await sendToBackground('get_activity');
   const log    = result?.log || [];
 
-  const list = document.getElementById('activity-log-list');
+  const list    = document.getElementById('activity-log-list');
+  const badge   = document.getElementById('error-badge');
+  const summary = document.getElementById('activity-summary');
   list.innerHTML = '';
 
   if (log.length === 0) {
     list.innerHTML = '<div class="empty-state">No activity yet. The AI will start acting on its schedule.</div>';
+    badge.classList.add('hidden');
+    summary.textContent = '—';
     return;
   }
 
+  const errorCount  = log.filter(e => e.type === 'error').length;
+  const actionCount = log.filter(e => ['comment','follow','like','reply'].includes(e.type)).length;
+
+  // Update error badge on tab
+  if (errorCount > 0) {
+    badge.textContent = errorCount;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+
+  summary.textContent = `${actionCount} action${actionCount !== 1 ? 's' : ''} · ${errorCount} error${errorCount !== 1 ? 's' : ''}`;
+
   log.forEach(entry => {
     const item = document.createElement('div');
-    item.className = 'log-item';
+    item.className = `log-item ${entry.type || ''}`;
+
+    const typeIcon = {
+      comment:   '💬',
+      follow:    '➕',
+      like:      '❤️',
+      reply:     '↩️',
+      error:     '⚠️',
+      task:      '▶',
+      task_done: '✓',
+    }[entry.type] || '•';
+
     item.innerHTML = `
       <div class="log-item-time">${formatTime(entry.executedAt)}</div>
-      <div>${escapeHtml(entry.description || '')}</div>
+      <div class="log-item-desc">${escapeHtml(typeIcon + ' ' + (entry.description || ''))}</div>
     `;
     list.appendChild(item);
   });
+
+  // Wire clear errors button
+  document.getElementById('btn-clear-errors').onclick = async () => {
+    // Remove error entries from the displayed list only (keep non-errors)
+    document.querySelectorAll('.log-item.error').forEach(el => el.remove());
+    badge.classList.add('hidden');
+    // Re-count
+    const remaining = document.querySelectorAll('.log-item').length;
+    if (remaining === 0) {
+      list.innerHTML = '<div class="empty-state">No activity yet.</div>';
+    }
+    summary.textContent = `${actionCount} action${actionCount !== 1 ? 's' : ''} · 0 errors`;
+  };
 }
 
 function formatTime(ts) {

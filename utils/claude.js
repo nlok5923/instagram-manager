@@ -152,7 +152,7 @@ Key rules:
 // onStatus(text) — called with status updates as Claude works
 // onToolCall(tool, params) — called before each tool execution
 // executeToolOnTab(tool, params) — executes the tool in the Instagram tab
-export async function runTask({ apiKey, config, taskDescription, conversationHistory = [], onStatus, executeToolOnTab }) {
+export async function runTask({ apiKey, config, taskDescription, conversationHistory = [], onStatus, executeToolOnTab, onError }) {
   const messages = [
     ...conversationHistory,
     { role: 'user', content: taskDescription },
@@ -167,21 +167,15 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
     const response = await callClaude({ apiKey, messages, config });
 
     if (response.error) {
+      const msg = `Claude API error at step ${iterations}: ${response.error}`;
+      onError?.('claude_api', msg, `Task: ${taskDescription.slice(0, 100)}`);
       return { ok: false, error: response.error };
     }
 
-    // Add assistant response to history
     messages.push({ role: 'assistant', content: response.content });
 
-    // Check stop reason
-    if (response.stop_reason === 'end_turn') {
-      const text = extractText(response.content);
-      return { ok: true, result: text, messages };
-    }
-
-    if (response.stop_reason !== 'tool_use') {
-      const text = extractText(response.content);
-      return { ok: true, result: text, messages };
+    if (response.stop_reason === 'end_turn' || response.stop_reason !== 'tool_use') {
+      return { ok: true, result: extractText(response.content), messages };
     }
 
     // Process tool calls
@@ -194,30 +188,31 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
       onStatus?.(`Executing: ${name}${input.url ? ' → ' + input.url : ''}`);
 
       let result;
+      try {
+        result = await executeToolOnTab(name === 'screenshot' ? 'screenshot' : name, name === 'screenshot' ? {} : input);
+      } catch (err) {
+        result = { ok: false, error: err.message };
+        onError?.('tool_execution', `Tool "${name}" threw: ${err.message}`, JSON.stringify(input).slice(0, 200));
+      }
 
-      if (name === 'screenshot') {
-        // Screenshot is handled by background directly (tab capture API)
-        result = await executeToolOnTab('screenshot', {});
-      } else {
-        result = await executeToolOnTab(name, input);
+      // Log tool-level failures so they surface in the activity log
+      if (!result?.ok) {
+        onError?.('tool_result', `Tool "${name}" failed: ${result?.error || 'unknown'}`, JSON.stringify(input).slice(0, 200));
       }
 
       toolResults.push({
-        type: 'tool_result',
+        type:        'tool_result',
         tool_use_id: id,
-        content: JSON.stringify(result),
+        content:     JSON.stringify(result),
       });
     }
 
-    // Feed tool results back
     messages.push({ role: 'user', content: toolResults });
   }
 
-  return {
-    ok: false,
-    error: `Reached maximum iterations (${MAX_TOOL_ITERATIONS}). Task may be incomplete.`,
-    messages,
-  };
+  const iterError = `Reached maximum tool iterations (${MAX_TOOL_ITERATIONS}). Task may be incomplete.`;
+  onError?.('iteration_cap', iterError, taskDescription.slice(0, 100));
+  return { ok: false, error: iterError, messages };
 }
 
 // ─── Single Claude API Call ───────────────────────────────────────────────────
@@ -242,12 +237,21 @@ async function callClaude({ apiKey, messages, config }) {
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      return { error: err?.error?.message || `API error ${response.status}` };
+      const msg = err?.error?.message || `HTTP ${response.status} ${response.statusText}`;
+      // Surface rate limits and auth errors clearly
+      if (response.status === 401) return { error: `Invalid API key (401). Check Settings.` };
+      if (response.status === 429) return { error: `Rate limited by Anthropic (429). Will retry next cycle.` };
+      if (response.status === 529) return { error: `Anthropic API overloaded (529). Will retry next cycle.` };
+      return { error: msg };
     }
 
     return await response.json();
   } catch (err) {
-    return { error: err.message };
+    // Network-level error (DNS, CORS, service worker killed, etc.)
+    const detail = err.name === 'TypeError' && err.message === 'Failed to fetch'
+      ? 'Network error — check internet connection or extension permissions.'
+      : err.message;
+    return { error: detail };
   }
 }
 
