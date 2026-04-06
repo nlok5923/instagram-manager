@@ -2,7 +2,7 @@
 // Handles all communication with the Anthropic API.
 // Supports: tool use loop, vision (base64 screenshots), streaming status.
 
-const CLAUDE_MODEL = 'claude-opus-4-6';
+const CLAUDE_MODEL = 'claude-sonnet-4-5';
 const API_URL      = 'https://api.anthropic.com/v1/messages';
 const MAX_TOKENS   = 4096;
 const MAX_TOOL_ITERATIONS = 100; // safety cap per task
