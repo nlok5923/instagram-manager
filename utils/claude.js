@@ -124,6 +124,15 @@ export const INSTAGRAM_TOOLS = [
       },
     },
   },
+  {
+    name: 'inspect_dom',
+    description: 'Inspect the current Instagram page and return the real selectors and HTML of key interactive elements (like button, follow button, comment input, etc.). Use this when click fails to understand the actual DOM structure.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
 ];
 
 // ─── System Prompt ────────────────────────────────────────────────────────────

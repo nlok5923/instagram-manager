@@ -1,28 +1,69 @@
 // ─── Content Script ───────────────────────────────────────────────────────────
-// Runs inside instagram.com. Exposes 7 tools to the background worker via
-// chrome.runtime.onMessage. Each tool returns { ok, data, error }.
+// Runs inside instagram.com. Exposes tools to the background worker.
+// navigate is NOT handled here — background uses chrome.tabs.update instead.
 
 (() => {
-  // ─── Tool: screenshot ──────────────────────────────────────────────────────
-  // Captures the visible viewport as a base64 PNG using html2canvas-like
-  // approach via the Chrome tab capture API (requested from background).
-  // Content script signals background to do the actual capture.
-  async function toolScreenshot() {
-    return { ok: true, data: { note: 'capture_via_background' } };
-  }
 
-  // navigate is handled by the background service worker via chrome.tabs.update —
-  // NOT here, because navigating destroys this script and closes the message channel.
+  // ─── Instagram Element Map ────────────────────────────────────────────────
+  // Stable ways to find key Instagram elements.
+  // Instagram uses obfuscated class names that change — we prefer aria-label,
+  // role, data attributes, and structural selectors over class names.
+  const IG = {
+    // Like button on a post page (the heart icon)
+    likeButton: () =>
+      document.querySelector('button[type="button"] svg[aria-label="Like"]')?.closest('button') ||
+      document.querySelector('svg[aria-label="Like"]')?.closest('button') ||
+      document.querySelector('svg[aria-label="Unlike"]')?.closest('button'),
+
+    // Comment input box on a post page
+    commentInput: () =>
+      document.querySelector('textarea[placeholder*="comment" i]') ||
+      document.querySelector('textarea[aria-label*="comment" i]') ||
+      document.querySelector('form textarea'),
+
+    // Post comment / submit button
+    commentSubmit: () =>
+      document.querySelector('button[type="submit"]') ||
+      document.querySelector('div[role="button"][tabindex="0"]:not([aria-label])'),
+
+    // Follow button on a profile page
+    followButton: () => {
+      const btns = [...document.querySelectorAll('button[type="button"]')];
+      return btns.find(b => /^follow$/i.test(b.innerText?.trim())) || null;
+    },
+
+    // Following button (already followed)
+    followingButton: () => {
+      const btns = [...document.querySelectorAll('button[type="button"]')];
+      return btns.find(b => /^following$/i.test(b.innerText?.trim())) || null;
+    },
+
+    // Post links on any page
+    postLinks: () => [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')],
+
+    // Articles / posts in feed
+    articles: () => [...document.querySelectorAll('article[role="presentation"], article')],
+  };
 
   // ─── Tool: click ──────────────────────────────────────────────────────────
   async function toolClick({ selector, description }) {
     let el = null;
 
-    if (selector) {
+    // 1. Named Instagram element shortcuts (most reliable)
+    if (description) {
+      const desc = description.toLowerCase();
+      if (desc.includes('like') && !desc.includes('unlike')) el = IG.likeButton();
+      else if (desc.includes('follow') && !desc.includes('following')) el = IG.followButton();
+      else if (desc.includes('comment') && desc.includes('submit')) el = IG.commentSubmit();
+      else if (desc.includes('comment') && (desc.includes('box') || desc.includes('input'))) el = IG.commentInput();
+    }
+
+    // 2. CSS selector
+    if (!el && selector) {
       el = document.querySelector(selector);
     }
 
-    // Fallback: find by aria-label or text content matching description
+    // 3. Fuzzy description fallback
     if (!el && description) {
       el = findElementByDescription(description);
     }
@@ -31,9 +72,21 @@
       return { ok: false, error: `Element not found: selector="${selector}" description="${description}"` };
     }
 
+    // If we landed on an SVG or path, bubble up to the nearest clickable parent
+    if (el instanceof SVGElement || el.tagName?.toLowerCase() === 'svg' || el.tagName?.toLowerCase() === 'path') {
+      el = el.closest('button') || el.closest('[role="button"]') || el.closest('a') || el;
+    }
+
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await sleep(400);
-    el.click();
+
+    // Dispatch pointer events + click for React/Next.js event handlers
+    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mousedown',   { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseup',     { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('click',       { bubbles: true, cancelable: true }));
+    if (typeof el.click === 'function') el.click();
+
     await sleep(600);
     return { ok: true, data: { clicked: el.tagName, text: el.textContent?.slice(0, 80) } };
   }
@@ -42,12 +95,11 @@
   async function toolType({ selector, description, text, clearFirst }) {
     let el = null;
 
-    if (selector) el = document.querySelector(selector);
+    if (description?.toLowerCase().includes('comment')) el = IG.commentInput();
+    if (!el && selector) el = document.querySelector(selector);
     if (!el && description) el = findElementByDescription(description);
 
-    if (!el) {
-      return { ok: false, error: `Input element not found: "${selector || description}"` };
-    }
+    if (!el) return { ok: false, error: `Input not found: "${selector || description}"` };
 
     el.focus();
     await sleep(300);
@@ -58,28 +110,24 @@
       await sleep(200);
     }
 
-    // Type character by character to mimic human input
+    // React's synthetic event system needs the native setter
+    const nativeSetter =
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,   'value')?.set ||
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+
     for (const char of text) {
-      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype, 'value'
-      )?.set || Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype, 'value'
-      )?.set;
+      const current = el.value || '';
+      if (nativeSetter) nativeSetter.call(el, current + char);
+      else el.value = current + char;
 
-      if (nativeInputValueSetter) {
-        nativeInputValueSetter.call(el, (el.value || '') + char);
-      } else {
-        el.value += char;
-      }
-
-      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('input',   { bubbles: true }));
       el.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
-      el.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true }));
-      await sleep(randomBetween(30, 90)); // human-like typing speed
+      el.dispatchEvent(new KeyboardEvent('keyup',   { key: char, bubbles: true }));
+      await sleep(randomBetween(30, 80));
     }
 
     el.dispatchEvent(new Event('change', { bubbles: true }));
-    return { ok: true, data: { typed: text.length + ' characters' } };
+    return { ok: true, data: { typed: `${text.length} characters` } };
   }
 
   // ─── Tool: scroll ─────────────────────────────────────────────────────────
@@ -88,150 +136,172 @@
     if (!target) return { ok: false, error: `Scroll target not found: "${selector}"` };
 
     const scrollAmount = direction === 'up' ? -amount : amount;
-
-    if (target === window) {
-      window.scrollBy({ top: scrollAmount, behavior: 'smooth' });
-    } else {
-      target.scrollBy({ top: scrollAmount, behavior: 'smooth' });
-    }
+    target === window
+      ? window.scrollBy({ top: scrollAmount, behavior: 'smooth' })
+      : target.scrollBy({ top: scrollAmount, behavior: 'smooth' });
 
     await sleep(800);
-    return {
-      ok: true,
-      data: {
-        scrollY: window.scrollY,
-        pageHeight: document.body.scrollHeight,
-      }
-    };
+    return { ok: true, data: { scrollY: window.scrollY, pageHeight: document.body.scrollHeight } };
   }
 
   // ─── Tool: read_page ──────────────────────────────────────────────────────
-  // Extracts structured text from the current page.
   function toolReadPage({ mode = 'full' }) {
     const url = window.location.href;
-
-    if (mode === 'posts' || url.includes('/explore/tags/')) {
-      return readHashtagPage();
-    }
-    if (mode === 'profile' || url.match(/instagram\.com\/[^/]+\/?$/)) {
-      return readProfilePage();
-    }
-    if (mode === 'post' || url.includes('/p/') || url.includes('/reel/')) {
-      return readPostPage();
-    }
-    if (mode === 'feed' || url === 'https://www.instagram.com/') {
-      return readFeedPage();
-    }
-
-    // Generic fallback
-    return {
-      ok: true,
-      data: {
-        url,
-        title: document.title,
-        text: document.body.innerText.slice(0, 3000),
-      }
-    };
+    if (mode === 'posts' || url.includes('/explore/tags/') || url.includes('/explore/search/')) return readHashtagPage();
+    if (mode === 'profile' || url.match(/instagram\.com\/[^/]+\/?$/)) return readProfilePage();
+    if (mode === 'post'    || url.includes('/p/') || url.includes('/reel/')) return readPostPage();
+    if (mode === 'feed'    || url === 'https://www.instagram.com/') return readFeedPage();
+    return { ok: true, data: { url, title: document.title, text: document.body.innerText.slice(0, 3000) } };
   }
 
   function readHashtagPage() {
-    const posts = [];
-    // Instagram post links on hashtag/explore pages
-    const links = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
-    links.forEach(link => {
-      const img = link.querySelector('img');
-      posts.push({
-        url: link.href,
-        alt: img?.alt?.slice(0, 200) || '',
-      });
-    });
+    const posts = IG.postLinks().slice(0, 20).map(a => ({
+      url: a.href,
+      alt: a.querySelector('img')?.alt?.slice(0, 200) || '',
+    }));
     return { ok: true, data: { type: 'hashtag_page', url: window.location.href, posts } };
   }
 
   function readProfilePage() {
-    const username = window.location.pathname.replace(/\//g, '');
-    const followerEl = document.querySelector('a[href*="followers"] span, span[title]');
-    const bioEl = document.querySelector('span._aacl._aaco._aacu._aacx._aad7._aade, div[data-testid="user-bio"]');
-    const postLinks = [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')]
-      .slice(0, 12)
-      .map(a => a.href);
+    const pathname = window.location.pathname.replace(/\//g, '');
+    // Follower count — try multiple approaches Instagram uses
+    const followerEl =
+      document.querySelector('a[href$="/followers/"] span') ||
+      document.querySelector('li:nth-child(2) span span') ||
+      document.querySelector('span[title]');
+
+    // Bio
+    const bioEl =
+      document.querySelector('span[class*="_aacl"]') ||
+      document.querySelector('div[class*="biography"]') ||
+      document.querySelector('h1 ~ span');
+
+    // Is follow button present?
+    const canFollow   = !!IG.followButton();
+    const isFollowing = !!IG.followingButton();
+
+    const recentPosts = IG.postLinks().slice(0, 12).map(a => a.href);
 
     return {
       ok: true,
-      data: {
-        type: 'profile',
-        username,
-        bio: bioEl?.innerText || '',
-        followerCount: followerEl?.innerText || 'unknown',
-        recentPosts: postLinks,
-      }
+      data: { type: 'profile', username: pathname, bio: bioEl?.innerText || '', followerCount: followerEl?.innerText || 'unknown', canFollow, isFollowing, recentPosts }
     };
   }
 
   function readPostPage() {
-    const caption = document.querySelector('div._a9zs, h1._aacl, span._aacl')?.innerText || '';
-    const likes = document.querySelector('span.x193iq5w, button span[class*="like"]')?.innerText || '';
-    const comments = [...document.querySelectorAll('li._a9yw span._aacl, div._a9zm span')].map(
-      el => el.innerText?.slice(0, 200)
-    ).filter(Boolean).slice(0, 10);
+    // Caption: first meaningful text block under the post
+    const captionEl =
+      document.querySelector('div[class*="_a9zs"]') ||
+      document.querySelector('h1') ||
+      document.querySelector('article span[class*="_aacl"]');
+    const caption = captionEl?.innerText || '';
 
-    return {
-      ok: true,
-      data: {
-        type: 'post',
-        url: window.location.href,
-        caption: caption.slice(0, 500),
-        likes,
-        comments,
-      }
-    };
+    // Like count
+    const likesEl =
+      document.querySelector('span[class*="x193iq5w"]') ||
+      document.querySelector('button span');
+    const likes = likesEl?.innerText || '';
+
+    // Already liked?
+    const isLiked = !!document.querySelector('svg[aria-label="Unlike"]');
+
+    // Comments
+    const commentEls = [
+      ...document.querySelectorAll('ul li span[class*="_aacl"]'),
+      ...document.querySelectorAll('div[class*="_a9zs"] span'),
+    ];
+    const comments = [...new Set(commentEls.map(e => e.innerText?.trim()).filter(Boolean))].slice(0, 15);
+
+    return { ok: true, data: { type: 'post', url: window.location.href, caption: caption.slice(0, 500), likes, isLiked, comments } };
   }
 
   function readFeedPage() {
-    const posts = [];
-    document.querySelectorAll('article').forEach(article => {
+    const posts = IG.articles().map(article => {
       const link = article.querySelector('a[href*="/p/"], a[href*="/reel/"]');
-      const caption = article.querySelector('span._aacl')?.innerText || '';
-      if (link) {
-        posts.push({ url: link.href, caption: caption.slice(0, 200) });
-      }
-    });
+      const caption = article.querySelector('span[class*="_aacl"]')?.innerText || '';
+      return link ? { url: link.href, caption: caption.slice(0, 200) } : null;
+    }).filter(Boolean);
     return { ok: true, data: { type: 'feed', posts: posts.slice(0, 10) } };
   }
 
   // ─── Tool: wait ───────────────────────────────────────────────────────────
   async function toolWait({ seconds = 2 }) {
-    await sleep(seconds * 1000);
-    return { ok: true, data: { waited: seconds + 's' } };
+    await sleep(Math.min(seconds, 10) * 1000);
+    return { ok: true, data: { waited: `${seconds}s` } };
+  }
+
+  // ─── Tool: inspect_dom ────────────────────────────────────────────────────
+  // Dumps the real selectors/HTML of key Instagram interactive elements.
+  // Run this once to map the current DOM — feed results into Claude's context.
+  function toolInspectDom() {
+    const report = {};
+
+    const checks = {
+      like_button:     () => document.querySelector('svg[aria-label="Like"], svg[aria-label="Unlike"]')?.closest('button'),
+      comment_input:   () => document.querySelector('textarea[placeholder*="comment" i], form textarea'),
+      comment_submit:  () => document.querySelector('button[type="submit"]'),
+      follow_button:   () => IG.followButton(),
+      following_button:() => IG.followingButton(),
+      post_links:      () => IG.postLinks()[0],
+      first_article:   () => IG.articles()[0],
+    };
+
+    for (const [name, finder] of Object.entries(checks)) {
+      const el = finder();
+      if (el) {
+        report[name] = {
+          found:     true,
+          tagName:   el.tagName,
+          id:        el.id || null,
+          ariaLabel: el.getAttribute('aria-label') || null,
+          role:      el.getAttribute('role') || null,
+          // Stable selector path
+          selector:  buildSelector(el),
+          outerHTML: el.outerHTML.slice(0, 300),
+        };
+      } else {
+        report[name] = { found: false };
+      }
+    }
+
+    return { ok: true, data: { type: 'dom_inspection', url: window.location.href, elements: report } };
+  }
+
+  // Build a reasonably stable CSS selector for an element
+  function buildSelector(el) {
+    const parts = [];
+    let node = el;
+    while (node && node !== document.body) {
+      let part = node.tagName.toLowerCase();
+      if (node.id) { part += `#${node.id}`; parts.unshift(part); break; }
+      if (node.getAttribute('aria-label')) part += `[aria-label="${node.getAttribute('aria-label')}"]`;
+      else if (node.getAttribute('role'))  part += `[role="${node.getAttribute('role')}"]`;
+      else if (node.getAttribute('type'))  part += `[type="${node.getAttribute('type')}"]`;
+      parts.unshift(part);
+      node = node.parentElement;
+      if (parts.length >= 4) break;
+    }
+    return parts.join(' > ');
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  function randomBetween(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-  }
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  function randomBetween(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
   function findElementByDescription(description) {
     const desc = description.toLowerCase();
-
-    // Try aria-label
-    const byAria = document.querySelector(`[aria-label*="${description}"]`);
-    if (byAria) return byAria;
-
-    // Try placeholder
-    const byPlaceholder = document.querySelector(`[placeholder*="${description}"]`);
-    if (byPlaceholder) return byPlaceholder;
-
-    // Try button/span/div with matching text
-    const candidates = document.querySelectorAll('button, a, span, div[role="button"]');
-    for (const el of candidates) {
-      if (el.textContent?.toLowerCase().includes(desc)) return el;
+    // aria-label (case-insensitive via filter)
+    const allEls = [...document.querySelectorAll('[aria-label], [placeholder], button, a, div[role="button"]')];
+    for (const el of allEls) {
+      const label = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.textContent || '').toLowerCase();
+      if (label.includes(desc)) return el;
     }
-
     return null;
+  }
+
+  // ─── Screenshot placeholder ───────────────────────────────────────────────
+  async function toolScreenshot() {
+    return { ok: true, data: { note: 'capture_via_background' } };
   }
 
   // ─── Message Router ───────────────────────────────────────────────────────
@@ -243,14 +313,14 @@
     const run = async () => {
       try {
         switch (tool) {
-          case 'screenshot':  return await toolScreenshot();
-          case 'click':       return await toolClick(params);
-          case 'type':        return await toolType(params);
-          case 'scroll':      return await toolScroll(params);
-          case 'read_page':   return toolReadPage(params);
-          case 'wait':        return await toolWait(params);
-          default:
-            return { ok: false, error: `Unknown tool: ${tool}` };
+          case 'screenshot':    return await toolScreenshot();
+          case 'click':         return await toolClick(params);
+          case 'type':          return await toolType(params);
+          case 'scroll':        return await toolScroll(params);
+          case 'read_page':     return toolReadPage(params);
+          case 'wait':          return await toolWait(params);
+          case 'inspect_dom':   return toolInspectDom();
+          default:              return { ok: false, error: `Unknown tool: ${tool}` };
         }
       } catch (err) {
         return { ok: false, error: err.message };
@@ -258,8 +328,8 @@
     };
 
     run().then(sendResponse);
-    return true; // keeps the message channel open for async response
+    return true;
   });
 
-  console.log('[IAM] Content script loaded on', window.location.href);
+  console.log('[IAM] Content script ready on', window.location.href);
 })();

@@ -93,6 +93,7 @@ async function handlePanelMessage({ type, payload }) {
     case 'chat':          return await handleChat(payload.prompt, payload.history);
 
     // Manual triggers from Tools tab
+    case 'inspect_dom':         return await runDomInspection();
     case 'scan_hashtags':       return await runTrendScan();
     case 'run_engagement':      return await runEngagementCycle();
     case 'draft_caption':       return await handleDraftCaption(payload);
@@ -196,6 +197,33 @@ function inferActionType(desc) {
 }
 
 // ─── Scheduled Jobs ───────────────────────────────────────────────────────────
+
+// ─── DOM Inspection ───────────────────────────────────────────────────────────
+// Runs inspect_dom on the current Instagram tab and feeds the result back
+// to Claude so it learns the real selectors before doing click actions.
+async function runDomInspection() {
+  const tab = await getOrOpenInstagramTab();
+  if (!tab) return { ok: false, error: 'No Instagram tab found.' };
+
+  const inspection = await sendToContentScript(tab.id, 'inspect_dom', {});
+
+  if (!inspection.ok) return inspection;
+
+  // Feed into Claude for analysis
+  const config = await getConfig();
+  const summary = await chat({
+    apiKey: config.claudeApiKey,
+    config,
+    prompt:
+      `Here is the real DOM inspection of the current Instagram page:\n\n` +
+      JSON.stringify(inspection.data, null, 2) +
+      `\n\nSummarise what selectors are available and what clicks will work on this page. ` +
+      `Note any elements that are missing (not found).`,
+  });
+
+  sendToPanel({ type: 'task_done', payload: { ok: true, result: summary.text || JSON.stringify(inspection.data, null, 2) } });
+  return { ok: true };
+}
 
 // Instagram hashtag explore URL — correct format
 function hashtagUrl(tag) {
