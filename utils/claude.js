@@ -5,7 +5,7 @@
 const CLAUDE_MODEL = 'claude-opus-4-6';
 const API_URL      = 'https://api.anthropic.com/v1/messages';
 const MAX_TOKENS   = 4096;
-const MAX_TOOL_ITERATIONS = 20; // safety cap per task
+const MAX_TOOL_ITERATIONS = 100; // safety cap per task
 
 // ─── Tool Definitions (what Claude can do on Instagram) ───────────────────────
 export const INSTAGRAM_TOOLS = [
