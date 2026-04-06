@@ -10,13 +10,12 @@
     "scripting",
     "storage",
     "sidePanel",
-    "alarms"
+    "alarms",
+    "windows"
   ],
 
   "host_permissions": [
-    "https://www.instagram.com/*",
-    "https://instagram.com/*",
-    "https://api.anthropic.com/*"
+    "<all_urls>"
   ],
 
   "background": {

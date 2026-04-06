@@ -490,12 +490,14 @@ async function waitForTabLoad(tabId) {
 }
 
 async function captureTabScreenshot(tabId) {
-  // captureVisibleTab only works on the active tab — make it active first
+  // captureVisibleTab needs the tab to be active AND its window focused
+  const tab = await chrome.tabs.get(tabId);
   await chrome.tabs.update(tabId, { active: true });
-  await sleep(400); // let the render settle
+  await chrome.windows.update(tab.windowId, { focused: true });
+  await sleep(500);
 
   return new Promise(resolve => {
-    chrome.tabs.captureVisibleTab(null, { format: 'jpeg', quality: 70 }, dataUrl => {
+    chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 70 }, dataUrl => {
       if (chrome.runtime.lastError) {
         resolve({ ok: false, error: chrome.runtime.lastError.message });
       } else {
