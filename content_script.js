@@ -9,39 +9,48 @@
   // Instagram uses obfuscated class names that change — we prefer aria-label,
   // role, data attributes, and structural selectors over class names.
   const IG = {
-    // Like button on a post page (the heart icon)
-    likeButton: () =>
-      document.querySelector('button[type="button"] svg[aria-label="Like"]')?.closest('button') ||
-      document.querySelector('svg[aria-label="Like"]')?.closest('button') ||
-      document.querySelector('svg[aria-label="Unlike"]')?.closest('button'),
+    // Like button — scroll to top of post first, then look for the heart SVG
+    likeButton: () => {
+      // Try all known patterns
+      return (
+        document.querySelector('svg[aria-label="Like"]')?.closest('button') ||
+        document.querySelector('svg[aria-label="Unlike"]')?.closest('button') ||
+        // Fallback: find button near the action row (like/comment/share icons)
+        [...document.querySelectorAll('section button, div[role="group"] button')]
+          .find(b => b.querySelector('svg') && !b.querySelector('[aria-label*="comment" i]') && !b.querySelector('[aria-label*="share" i]')) ||
+        null
+      );
+    },
 
-    // Comment input box on a post page
+    // Comment textarea — confirmed selector from DOM inspection
     commentInput: () =>
-      document.querySelector('textarea[placeholder*="comment" i]') ||
+      document.querySelector('textarea[aria-label="Add a comment\u2026"]') ||
       document.querySelector('textarea[aria-label*="comment" i]') ||
+      document.querySelector('textarea[placeholder*="comment" i]') ||
       document.querySelector('form textarea'),
 
-    // Post comment / submit button
+    // Submit button — only appears AFTER text is typed into the comment box
     commentSubmit: () =>
       document.querySelector('button[type="submit"]') ||
-      document.querySelector('div[role="button"][tabindex="0"]:not([aria-label])'),
+      // Instagram renders "Post" as a div[role=button] or a plain button
+      [...document.querySelectorAll('button, div[role="button"]')]
+        .find(el => /^post$/i.test(el.innerText?.trim())) ||
+      null,
 
-    // Follow button on a profile page
-    followButton: () => {
-      const btns = [...document.querySelectorAll('button[type="button"]')];
-      return btns.find(b => /^follow$/i.test(b.innerText?.trim())) || null;
-    },
+    // Follow button — only present on profile pages, not post pages
+    followButton: () =>
+      [...document.querySelectorAll('button[type="button"]')]
+        .find(b => /^follow$/i.test(b.innerText?.trim())) || null,
 
-    // Following button (already followed)
-    followingButton: () => {
-      const btns = [...document.querySelectorAll('button[type="button"]')];
-      return btns.find(b => /^following$/i.test(b.innerText?.trim())) || null;
-    },
+    // Already following
+    followingButton: () =>
+      [...document.querySelectorAll('button[type="button"]')]
+        .find(b => /^following$/i.test(b.innerText?.trim())) || null,
 
-    // Post links on any page
+    // Post + reel links
     postLinks: () => [...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')],
 
-    // Articles / posts in feed
+    // Feed articles
     articles: () => [...document.querySelectorAll('article[role="presentation"], article')],
   };
 
@@ -128,6 +137,53 @@
 
     el.dispatchEvent(new Event('change', { bubbles: true }));
     return { ok: true, data: { typed: `${text.length} characters` } };
+  }
+
+  // ─── Tool: post_comment ───────────────────────────────────────────────────
+  // Full comment flow in one shot: click input → type → wait for Post btn → submit.
+  async function toolPostComment({ text }) {
+    if (!text) return { ok: false, error: 'No comment text provided.' };
+
+    // 1. Find and click the comment textarea
+    const input = IG.commentInput();
+    if (!input) return { ok: false, error: 'Comment textarea not found. Are you on a post page?' };
+
+    input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await sleep(400);
+    input.focus();
+    input.click();
+    await sleep(400);
+
+    // 2. Type the comment using native setter (required for React)
+    const nativeSetter =
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+
+    for (const char of text) {
+      const current = input.value || '';
+      if (nativeSetter) nativeSetter.call(input, current + char);
+      else input.value = current + char;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(randomBetween(30, 80));
+    }
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // 3. Wait up to 3s for the Post/Submit button to appear
+    let submitBtn = null;
+    for (let i = 0; i < 15; i++) {
+      submitBtn = IG.commentSubmit();
+      if (submitBtn) break;
+      await sleep(200);
+    }
+
+    if (!submitBtn) return { ok: false, error: 'Submit button never appeared after typing.' };
+
+    // 4. Click submit
+    await sleep(300);
+    submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    if (typeof submitBtn.click === 'function') submitBtn.click();
+    await sleep(1000);
+
+    return { ok: true, data: { commented: text.slice(0, 80) } };
   }
 
   // ─── Tool: scroll ─────────────────────────────────────────────────────────
@@ -319,6 +375,7 @@
           case 'scroll':        return await toolScroll(params);
           case 'read_page':     return toolReadPage(params);
           case 'wait':          return await toolWait(params);
+          case 'post_comment':  return await toolPostComment(params);
           case 'inspect_dom':   return toolInspectDom();
           case 'ping':          return { ok: true };
           default:              return { ok: false, error: `Unknown tool: ${tool}` };

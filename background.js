@@ -279,15 +279,19 @@ async function runEngagementCycle() {
   return await startTask(
     `Run an autonomous engagement cycle. Budget this cycle: ${budget.join(', ')}.\n\n` +
     `Step-by-step:\n` +
-    `1. Navigate to ${tag1} using the navigate tool.\n` +
-    `2. Wait 2 seconds. Use read_page with mode "posts" to get post URLs.\n` +
-    `3. For each post URL, navigate to it, take a screenshot to see the content, then:\n` +
-    `   - If we haven't commented: write a specific comment referencing the actual aircraft/angle/story visible. Click the comment box, type the comment, submit it. Then write "AUTONOMOUS_ACTION: commented on [url] — [brief what you said]"\n` +
-    `   - Like the post if we haven't. Write "AUTONOMOUS_ACTION: liked post at [url]"\n` +
-    `4. Visit the poster's profile. If they post quality aviation content and we haven't followed them, click Follow. Write "AUTONOMOUS_ACTION: followed @[username]"\n` +
-    `5. Add 3-5 second delays between each action.\n` +
-    `6. Once done with ${tag1}, repeat with ${tag2} if budget remains.\n` +
-    `7. End with a one-paragraph summary of everything you did.`
+    `1. Navigate to ${tag1}.\n` +
+    `2. Wait 2 seconds. Use read_page with mode "posts" to get a list of post URLs.\n` +
+    `3. For each post URL:\n` +
+    `   a. Navigate to the post URL.\n` +
+    `   b. Wait 2 seconds. Take a screenshot to see the content.\n` +
+    `   c. Use read_page with mode "post" to read the caption and see if already liked.\n` +
+    `   d. To comment: use the post_comment tool with a specific comment referencing the aircraft/angle/story. Write "AUTONOMOUS_ACTION: commented on [url]"\n` +
+    `   e. To like: scroll up slightly, then use the click tool with description "Like button". Write "AUTONOMOUS_ACTION: liked post at [url]"\n` +
+    `   f. To follow the poster: navigate to their profile URL (instagram.com/[username]/), wait 2s, then click the Follow button. Navigate back after. Write "AUTONOMOUS_ACTION: followed @[username]"\n` +
+    `4. Add 3-5 second delays between each action.\n` +
+    `5. If budget remains after ${tag1}, repeat with ${tag2}.\n` +
+    `6. End with a one-paragraph summary of everything you did.\n\n` +
+    `Important: the Follow button only exists on profile pages, not post pages. Always navigate to the profile to follow.`
   );
 }
 

@@ -125,6 +125,17 @@ export const INSTAGRAM_TOOLS = [
     },
   },
   {
+    name: 'post_comment',
+    description: 'Post a comment on the current Instagram post. Handles the full flow: clicks the textarea, types the text, waits for the Post button to appear, then submits. Use this instead of separate click+type+click steps.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The comment text to post.' },
+      },
+      required: ['text'],
+    },
+  },
+  {
     name: 'inspect_dom',
     description: 'Inspect the current Instagram page and return the real selectors and HTML of key interactive elements (like button, follow button, comment input, etc.). Use this when click fails to understand the actual DOM structure.',
     input_schema: {
