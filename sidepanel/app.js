@@ -9,7 +9,7 @@ let chatHistory = [];
 let isTaskRunning = false;
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   connectToBackground();
   setupTabs();
   setupChat();
