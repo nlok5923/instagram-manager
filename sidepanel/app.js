@@ -1,7 +1,7 @@
 // ─── Side Panel App ───────────────────────────────────────────────────────────
 // Full autonomy UI — chat, activity log, manual triggers, settings.
 
-import { getConfig, saveConfig } from '../utils/storage.js';
+import { getConfig, saveConfig, saveChatHistory, loadChatHistory } from '../utils/storage.js';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let port = null;
@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   refreshDailyCounts();
   refreshActivityLog();
+  await restoreChatHistory();
 });
 
 // ─── Background Connection ────────────────────────────────────────────────────
@@ -115,6 +116,8 @@ async function submitChat() {
 
   input.value = '';
   addMessage('user', text);
+  chatHistory.push({ role: 'user', content: text });
+  await saveChatHistory(chatHistory);
 
   if (looksLikeBrowserTask(text)) {
     setTaskRunning(true, text);
@@ -131,12 +134,26 @@ async function submitChat() {
     setTaskRunning(false);
     if (result?.ok) {
       addMessage('assistant', result.text);
-      chatHistory.push({ role: 'user', content: text });
       chatHistory.push({ role: 'assistant', content: result.text });
+      await saveChatHistory(chatHistory);
     } else {
       addMessage('system', `Error: ${result?.error || 'Unknown error'}`);
     }
   }
+}
+
+async function restoreChatHistory() {
+  const history = await loadChatHistory();
+  if (!history.length) return;
+  chatHistory = history;
+  const messages = document.getElementById('chat-messages');
+  // Render last 20 messages
+  history.slice(-20).forEach(msg => {
+    if (msg.role === 'user' || msg.role === 'assistant') {
+      addMessage(msg.role, msg.content);
+    }
+  });
+  messages.scrollTop = messages.scrollHeight;
 }
 
 function looksLikeBrowserTask(text) {

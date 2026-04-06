@@ -26,6 +26,8 @@ import {
   addActivity,
   getActivityLog,
   getNextHashtagCluster,
+  saveChatHistory,
+  loadChatHistory,
 } from './utils/storage.js';
 import {
   notifyPostIdea,
@@ -38,6 +40,24 @@ import {
 // ─── State ────────────────────────────────────────────────────────────────────
 let activeTaskAbortController = null;
 let sidePanelPort = null;
+let keepAliveInterval = null;
+
+// ─── Service Worker Keep-Alive ────────────────────────────────────────────────
+// MV3 service workers are killed after ~30s idle. During long Claude API calls
+// we ping chrome.storage every 20s to stay alive.
+function startKeepAlive() {
+  stopKeepAlive();
+  keepAliveInterval = setInterval(() => {
+    chrome.storage.local.set({ _keepalive: Date.now() });
+  }, 20_000);
+}
+
+function stopKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+}
 
 // ─── Side Panel Connection ────────────────────────────────────────────────────
 chrome.runtime.onConnect.addListener(port => {
@@ -90,6 +110,11 @@ async function startTask(taskDescription, conversationHistory = []) {
   await saveCurrentTask({ description: taskDescription, startedAt: Date.now() });
   sendToPanel({ type: 'task_started', payload: { description: taskDescription } });
 
+  // Log task start in activity feed
+  await addActivity({ type: 'task', description: `Started: ${taskDescription.slice(0, 80)}…` });
+  sendToPanel({ type: 'activity_updated' });
+
+  startKeepAlive();
   activeTaskAbortController = new AbortController();
   const { signal } = activeTaskAbortController;
 
@@ -107,16 +132,28 @@ async function startTask(taskDescription, conversationHistory = []) {
     },
   });
 
+  stopKeepAlive();
+
   if (!signal.aborted) {
     await clearCurrentTask();
-    sendToPanel({ type: 'task_done', payload: result });
+
+    // Log completion regardless of whether AUTONOMOUS_ACTION lines exist
+    if (result.ok) {
+      await addActivity({ type: 'task_done', description: `Done: ${taskDescription.slice(0, 60)}…` });
+    } else {
+      await addActivity({ type: 'error', description: `Error: ${result.error || 'unknown'}` });
+    }
+
     parseAndLogActions(result.result || '');
+    sendToPanel({ type: 'task_done', payload: result });
+    sendToPanel({ type: 'activity_updated' });
   }
 
   return result;
 }
 
 function stopActiveTask() {
+  stopKeepAlive();
   if (activeTaskAbortController) {
     activeTaskAbortController.abort();
     activeTaskAbortController = null;
@@ -153,15 +190,33 @@ function inferActionType(desc) {
 
 // ─── Scheduled Jobs ───────────────────────────────────────────────────────────
 
+// Instagram hashtag explore URL — correct format
+function hashtagUrl(tag) {
+  // Strip leading # if present
+  const clean = tag.replace(/^#/, '');
+  return `https://www.instagram.com/explore/tags/${clean}/`;
+}
+
+const AVIATION_HASHTAGS = [
+  'planespotting', 'avgeek', 'aviation', 'aviationphotography', 'aircraftspotting',
+];
+
 // 09:00 — Scan trends, generate post ideas, notify via Telegram
 async function runTrendScan() {
+  const tags = AVIATION_HASHTAGS.slice(0, 3);
+  const urls = tags.map(t => `${hashtagUrl(t)} (for #${t})`).join(', ');
+
   const result = await startTask(
-    'Scan the top posts in aviation hashtags #aviation, #planespotting, #avgeek, #aviationphotography, #aircraftspotting. ' +
-    'For each hashtag page, read the top 6 posts. Identify: what aircraft types are trending, ' +
-    'what content formats are getting the most engagement, any viral posts or emerging topics. ' +
-    'Then generate 3 specific post ideas for my aviation video account based on what you found. ' +
-    'For each post idea, write it on a new line starting with "POST_IDEA:" followed by the idea. ' +
-    'End with a brief summary of today\'s trends.'
+    `Scan trending aviation content. Visit these hashtag pages one by one:\n` +
+    tags.map(t => `- ${hashtagUrl(t)}`).join('\n') + '\n\n' +
+    `For each page:\n` +
+    `1. Use the navigate tool with the exact URL above.\n` +
+    `2. Wait 2 seconds for the page to load.\n` +
+    `3. Use read_page with mode "posts" to get the post list.\n` +
+    `4. Note what aircraft types, angles, and video styles appear most.\n\n` +
+    `After visiting all 3 pages, generate 3 specific post ideas for my aviation video account.\n` +
+    `Write each idea on its own line starting with "POST_IDEA:" e.g. "POST_IDEA: Close-up engine startup sequence of A380 — these are getting huge watch time right now"\n` +
+    `End with a short trends summary.`
   );
   return result;
 }
@@ -178,22 +233,26 @@ async function runEngagementCycle() {
   }
 
   const budget = [];
-  if (canComment) budget.push(`comment on up to ${10 - counts.comments} posts`);
-  if (canFollow)  budget.push(`follow up to ${Math.min(8, 35 - counts.follows)} accounts`);
-  if (canLike)    budget.push(`like up to ${Math.min(15, 60 - counts.likes)} posts`);
+  if (canComment) budget.push(`comment on up to ${Math.min(5, 10 - counts.comments)} posts`);
+  if (canFollow)  budget.push(`follow up to ${Math.min(5, 35 - counts.follows)} accounts`);
+  if (canLike)    budget.push(`like up to ${Math.min(10, 60 - counts.likes)} posts`);
+
+  // Pick 2 hashtag pages to work from
+  const tag1 = hashtagUrl('planespotting');
+  const tag2 = hashtagUrl('avgeek');
 
   return await startTask(
-    `Run an autonomous engagement cycle for an aviation Instagram account. ` +
-    `Your budget this cycle: ${budget.join(', ')}. ` +
-    `\nStrategy:\n` +
-    `1. Navigate to #planespotting and #avgeek explore pages.\n` +
-    `2. Find posts with good content (not already commented/liked by us).\n` +
-    `3. Leave specific, thoughtful comments that reference the actual aircraft, angle, or story.\n` +
-    `4. Follow users who post quality aviation content and appear genuinely engaged in the community.\n` +
-    `5. Like posts from accounts we follow or that align with our niche.\n` +
-    `6. Add 3-5 second random delays between every action to behave naturally.\n` +
-    `7. After each action, write "AUTONOMOUS_ACTION: [description]" on its own line.\n` +
-    `8. At the end, write a one-paragraph summary of what you did and why.`
+    `Run an autonomous engagement cycle. Budget this cycle: ${budget.join(', ')}.\n\n` +
+    `Step-by-step:\n` +
+    `1. Navigate to ${tag1} using the navigate tool.\n` +
+    `2. Wait 2 seconds. Use read_page with mode "posts" to get post URLs.\n` +
+    `3. For each post URL, navigate to it, take a screenshot to see the content, then:\n` +
+    `   - If we haven't commented: write a specific comment referencing the actual aircraft/angle/story visible. Click the comment box, type the comment, submit it. Then write "AUTONOMOUS_ACTION: commented on [url] — [brief what you said]"\n` +
+    `   - Like the post if we haven't. Write "AUTONOMOUS_ACTION: liked post at [url]"\n` +
+    `4. Visit the poster's profile. If they post quality aviation content and we haven't followed them, click Follow. Write "AUTONOMOUS_ACTION: followed @[username]"\n` +
+    `5. Add 3-5 second delays between each action.\n` +
+    `6. Once done with ${tag1}, repeat with ${tag2} if budget remains.\n` +
+    `7. End with a one-paragraph summary of everything you did.`
   );
 }
 
@@ -206,12 +265,16 @@ async function runGoldenHourCycle() {
   }
 
   const result = await startTask(
-    `Navigate to ${goldenHour.url}. ` +
-    `Read all comments on the post. For every comment that isn't spam or just an emoji, ` +
-    `reply directly with a warm, specific response that continues the conversation. ` +
-    `Post each reply immediately — no approval needed. ` +
-    `After each reply, write "AUTONOMOUS_ACTION: replied to comment by @[username]". ` +
-    `At the end write "REPLIES_SENT: N" where N is the total number of replies you posted.`
+    `Navigate to ${goldenHour.url} using the navigate tool.\n` +
+    `Wait 2 seconds for the post to load. Take a screenshot.\n` +
+    `Use read_page with mode "post" to get the comments.\n` +
+    `For every comment that isn't spam, a single emoji, or already replied to:\n` +
+    `1. Click the Reply button under that comment.\n` +
+    `2. Type a warm, specific reply that continues the conversation.\n` +
+    `3. Submit it.\n` +
+    `4. Write "AUTONOMOUS_ACTION: replied to @[username]: [brief summary]"\n` +
+    `5. Wait 3 seconds before the next reply.\n` +
+    `At the very end write "REPLIES_SENT: N" where N is how many replies you posted.`
   );
 
   // Parse reply count for Telegram notification

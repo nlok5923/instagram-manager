@@ -35,6 +35,9 @@ const KEYS = {
   // Activity log (what the AI has done)
   AUTONOMOUS_LOG:       'mem_autonomous_log',
   ACTIVITY_LOG:         'mem_activity_log',
+
+  // Chat history
+  CHAT_HISTORY:         'mem_chat_history',
 };
 
 // ─── Daily Limits ─────────────────────────────────────────────────────────────
@@ -301,6 +304,18 @@ async function getActivityLog() {
   return log;
 }
 
+// ─── Chat History ─────────────────────────────────────────────────────────────
+async function saveChatHistory(messages) {
+  // Keep last 40 messages to avoid storage bloat
+  await chrome.storage.local.set({ [KEYS.CHAT_HISTORY]: messages.slice(-40) });
+}
+
+async function loadChatHistory() {
+  const { [KEYS.CHAT_HISTORY]: history = [] } =
+    await chrome.storage.local.get(KEYS.CHAT_HISTORY);
+  return history;
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 export {
   DAILY_LIMITS,
@@ -333,4 +348,6 @@ export {
   getAutonomousLog,
   addActivity,
   getActivityLog,
+  saveChatHistory,
+  loadChatHistory,
 };
