@@ -149,7 +149,7 @@ export async function runTask({ apiKey, config, taskDescription, conversationHis
     // Normalise to Anthropic-style internally
     const normalised = provider === 'anthropic' ? response : normaliseOpenAIResponse(response);
 
-    messages.push({ role: 'assistant', content: normalised.content });
+    messages.push({ role: 'assistant', content: normalised.content, _reasoning_content: normalised._reasoning_content });
 
     if (normalised.stop_reason === 'end_turn' || normalised.stop_reason !== 'tool_use') {
       return { ok: true, result: extractText(normalised.content), messages };
@@ -327,7 +327,7 @@ function toOpenAIMessages(messages) {
             function: { name: b.name, arguments: JSON.stringify(b.input) },
           }));
         const text = msg.content.filter(b => b.type === 'text').map(b => b.text).join('');
-        out.push({ role: 'assistant', content: text || null, tool_calls: toolCalls.length ? toolCalls : undefined });
+        out.push({ role: 'assistant', content: text || null, tool_calls: toolCalls.length ? toolCalls : undefined, ...(msg._reasoning_content !== undefined && { reasoning_content: msg._reasoning_content }) });
       } else {
         out.push({ role: 'assistant', content: msg.content });
       }
@@ -374,7 +374,7 @@ function normaliseOpenAIResponse(response) {
   }
 
   const stop_reason = msg.tool_calls?.length ? 'tool_use' : 'end_turn';
-  return { content, stop_reason };
+  return { content, stop_reason, _reasoning_content: msg.reasoning_content ?? undefined };
 }
 
 // ─── Provider Detection ───────────────────────────────────────────────────────
