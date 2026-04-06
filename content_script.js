@@ -320,6 +320,7 @@
           case 'read_page':     return toolReadPage(params);
           case 'wait':          return await toolWait(params);
           case 'inspect_dom':   return toolInspectDom();
+          case 'ping':          return { ok: true };
           default:              return { ok: false, error: `Unknown tool: ${tool}` };
         }
       } catch (err) {

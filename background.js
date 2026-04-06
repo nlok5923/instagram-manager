@@ -536,6 +536,10 @@ async function captureTabScreenshot(tabId) {
 }
 
 async function sendToContentScript(tabId, tool, params) {
+  // Ensure the content script is injected — handles tabs that were already
+  // open before the extension loaded or was reloaded.
+  await ensureContentScript(tabId);
+
   return new Promise(resolve => {
     chrome.tabs.sendMessage(tabId, { source: 'iam_background', tool, params }, response => {
       if (chrome.runtime.lastError) {
@@ -545,6 +549,24 @@ async function sendToContentScript(tabId, tool, params) {
       }
     });
   });
+}
+
+async function ensureContentScript(tabId) {
+  // Ping the content script — if it responds, it's already injected.
+  const alive = await new Promise(resolve => {
+    chrome.tabs.sendMessage(tabId, { source: 'iam_background', tool: 'ping', params: {} }, res => {
+      resolve(!chrome.runtime.lastError && res?.ok);
+    });
+  });
+
+  if (!alive) {
+    // Inject the content script manually
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files:  ['content_script.js'],
+    }).catch(() => {}); // ignore if already injected
+    await sleep(500);
+  }
 }
 
 async function getOrOpenInstagramTab() {
